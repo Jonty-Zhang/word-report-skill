@@ -304,6 +304,7 @@ def add_table(doc, rows: Sequence[Sequence[str]], caption: str | None = None, he
             run = para.add_run(text)
             is_header = header and i == 0
             set_run_font(run, BODY_CN, BODY_EN, font_pt, bold=is_header)
+            para.paragraph_format.space_before = Pt(0)
             para.paragraph_format.space_after = Pt(0)
             para.paragraph_format.line_spacing = 1.0
             if is_header or j in center_cols or _looks_numeric(text):
