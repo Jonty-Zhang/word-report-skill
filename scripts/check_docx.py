@@ -44,6 +44,8 @@
   BIB_SEQ         参考文献序号重复或断号
   BIB_NO_FIELD    文献序号是手打的（不是 SEQ 域或自动编号）
   BIB_INDENT      参考文献条目首行缩进了，或没有悬挂缩进（续行不对齐）
+  BIB_FORMAT      著录不符合 GB/T 7714—2025：缺文献类型标识、代码不在代码表、印刷文献写了引用日期、
+                  网页/数据集/预印本缺引用日期、全角著录符号、西文姓全大写（2015 写法）
 ERROR 必须清零；WARN 逐条判断。退出码：有 ERROR 为 1，否则 0。
 """
 from __future__ import annotations
@@ -614,6 +616,54 @@ def bib_section(doc):
     return paras[:head], entries, bms
 
 
+GBT_TYPES = {"M", "J", "N", "C", "D", "R", "S", "P", "EB", "A", "CM", "DS", "PP", "G", "CP", "DB", "Z"}
+GBT_CARRIERS = {"OL", "CD", "DK", "MT", "MM"}
+TYPE_RE = re.compile(r"\[([A-Z]{1,2})(?:/([A-Z]{2}))?\](?://)?")
+DATE_BRACKET_RE = re.compile(r"\[\d{4}-\d{2}-\d{2}\]")
+STD_NO_RE = re.compile(r"^(GB|GB/T|GB/Z|ISO|IEC|IEEE|JB|JB/T|HJ|YY|DL/T|QB|SJ|GJB)[\s/]")
+CAPS_SURNAME_RE = re.compile(r"(?:^|,\s*)([A-Z]{2,}(?:-[A-Z]{2,})?)\s[A-Z](?:\s[A-Z])*(?=[,.])")
+
+
+def check_bib_format(entries, rep):
+    """GB/T 7714—2025 著录检查（只查能用规则判断的部分）。"""
+    no_type, bad_code, print_date, no_date, fullwidth, caps = [], [], [], [], [], []
+    for k, p in enumerate(entries, 1):
+        t = re.sub(r"^\[\d+\]\s*", "", para_text(p).strip())
+        if re.search(r"[，：；．]", t) or re.search(r"[一-鿿\]）)]。$", t):
+            fullwidth.append(k)
+        if not re.search(r"[一-鿿]", t.split("[")[0]):
+            m = CAPS_SURNAME_RE.search(t.split("[")[0])
+            if m:
+                caps.append(f"{k}:{m.group(1)}")
+        codes = TYPE_RE.findall(t)
+        is_std = bool(STD_NO_RE.match(t))
+        if not codes:
+            if not is_std:
+                no_type.append(k)
+            continue
+        typ, carrier = codes[0]
+        if typ not in GBT_TYPES or (carrier and carrier not in GBT_CARRIERS):
+            bad_code.append(f"{k}:[{typ}{'/' + carrier if carrier else ''}]")
+        online = carrier == "OL" or "http" in t.lower()
+        has_date = bool(DATE_BRACKET_RE.search(t))
+        if has_date and not online:
+            print_date.append(k)
+        if typ in ("EB", "DS", "PP") and not has_date:
+            no_date.append(k)
+    if no_type:
+        rep.warn("BIB_FORMAT", f"第 {no_type[:10]} 条缺文献类型标识（2025 版为必备项，只有标准可省）")
+    if bad_code:
+        rep.warn("BIB_FORMAT", f"类型/载体代码不在 GB/T 7714—2025 代码表里：{bad_code[:8]}")
+    if print_date:
+        rep.warn("BIB_FORMAT", f"第 {print_date[:10]} 条是非网络文献却写了引用日期，2025 版只有网络资源著录引用日期")
+    if no_date:
+        rep.warn("BIB_FORMAT", f"第 {no_date[:10]} 条是网页/数据集/预印本，缺 [引用日期]")
+    if fullwidth:
+        rep.warn("BIB_FORMAT", f"第 {fullwidth[:10]} 条用了全角著录符号（，：；．或句号结尾），著录用符号应为半角")
+    if caps:
+        rep.warn("BIB_FORMAT", f"西文姓全大写是 2015 写法，2025 版只首字母大写（Einstein A）：{caps[:6]}；若是汉语拼音姓名可保留全大写")
+
+
 def check_citations(doc, rep):
     styles_el = doc.styles.element
     body_paras, entries, bib_bms = bib_section(doc)
@@ -644,6 +694,7 @@ def check_citations(doc, rep):
     if valid != list(range(1, len(valid) + 1)):
         rep.error("BIB_SEQ", f"参考文献序号不连续或重复：{valid[:12]}")
     total = len(entries)
+    check_bib_format(entries, rep)
 
     cited_first = []
     manual = 0
