@@ -16,6 +16,9 @@
     h.add_table(doc, rows, caption="充放电对比", group_header=[("", 1), ("充电", 2), ("放电", 2)],
                 note="注：电压为三次测量平均值。", total_row=True)
     h.add_code(doc, "print('hello')")
+    h.add_body(doc, "已有工作多用阶跃响应拟合[[cite:zhang2020,li2019]]。")   # 上标文献引用 [1,2]
+    h.add_references(doc, [("zhang2020", "张三. 题名[J]. 刊名, 2020, 3(2): 1-5."),
+                           ("li2019", "李四. 书名[M]. 北京: 出版社, 2019: 10-12.")])   # 悬挂缩进
     h.finalize(doc)                          # 回填交叉引用；引用不存在的 key 会报错
     doc.save("课程名_报告标题_姓名.docx")
 
@@ -32,7 +35,7 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Pt, RGBColor
+from docx.shared import Cm, Pt, RGBColor, Twips
 
 try:
     from PIL import Image
@@ -58,7 +61,7 @@ MIN_DPI = 150
 # 题注编号状态。CAPTION_BY_CHAPTER=True 时按章编号（图 3.2），否则连续编号（图 1）。
 CAPTION_BY_CHAPTER = False
 UNNUMBERED_HEADINGS = {"摘要", "摘 要", "abstract", "目录", "目 录", "参考文献", "致谢", "致 谢", "附录", "后记"}
-_state = {"chapter": 0, "图": 0, "表": 0, "bm": 0, "refs": {}}
+_state = {"chapter": 0, "图": 0, "表": 0, "bm": 0, "refs": {}, "cite_order": [], "cite_bm": {}, "bib_done": False}
 
 
 # ---------- OOXML 子元素顺序 ----------
@@ -233,18 +236,24 @@ def add_heading(doc, text: str, level: int = 1):
     return p
 
 
-_REF_RE = re.compile(r"\[\[(fig|tab):([^\]]+)\]\]")
+_REF_RE = re.compile(r"\[\[(fig|tab|cite|cite-text):([^\]]+)\]\]")
 
 
 def add_body(doc, text: str, indent_chars: int = 2, bold: bool = False):
-    """正文段落。文字里的 [[fig:key]] / [[tab:key]] 会变成交叉引用（REF 域），
-    显示为“图 3.2”“表 1”；引用可以出现在图表之前，最后调用 finalize(doc) 统一回填。"""
+    """正文段落。标记会变成交叉引用（REF 域）：
+    [[fig:key]] / [[tab:key]]   显示为“图 3.2”“表 1”，可以出现在图表之前，finalize(doc) 统一回填
+    [[cite:a,b,c]]              上标文献引用，如 ^[1]、^[2-4]、^[1,3]
+    [[cite-text:a]]             不上标的引用，用于“见文献[3]”这种作句子成分的场合"""
     p = doc.add_paragraph()
     pos = 0
     for m in _REF_RE.finditer(text):
         if m.start() > pos:
             set_run_font(p.add_run(text[pos:m.start()]), BODY_CN, BODY_EN, BODY_PT, bold=bold)
-        add_ref(p, m.group(1), m.group(2).strip(), bold=bold)
+        if m.group(1) in ("fig", "tab"):
+            add_ref(p, m.group(1), m.group(2).strip(), bold=bold)
+        else:
+            keys = [k.strip() for k in re.split(r"[,，]", m.group(2)) if k.strip()]
+            add_cite(p, keys, superscript=(m.group(1) == "cite"), bold=bold)
         pos = m.end()
     if pos < len(text):
         set_run_font(p.add_run(text[pos:]), BODY_CN, BODY_EN, BODY_PT, bold=bold)
@@ -255,29 +264,31 @@ def add_body(doc, text: str, indent_chars: int = 2, bold: bool = False):
 
 # ---------- 题注与交叉引用（域） ----------
 
-def _new_run(paragraph, cn: str, size_pt: float, bold: bool = False):
+def _new_run(paragraph, cn: str, size_pt: float, bold: bool = False, superscript: bool = False):
     run = paragraph.add_run()
     set_run_font(run, cn, BODY_EN, size_pt, bold=bold)
+    if superscript:
+        run.font.superscript = True
     return run
 
 
 def _append_field(paragraph, instr: str, result: str, cn: str = BODY_CN, size_pt: float = BODY_PT,
-                  bold: bool = False):
+                  bold: bool = False, superscript: bool = False):
     """追加一个复杂域：begin / instrText / separate / 缓存结果 / end。返回结果文字所在的 run。"""
     def fld(kind):
-        r = _new_run(paragraph, cn, size_pt, bold)
+        r = _new_run(paragraph, cn, size_pt, bold, superscript)
         el = OxmlElement("w:fldChar")
         el.set(qn("w:fldCharType"), kind)
         r._element.append(el)
         return r
     fld("begin")
-    r = _new_run(paragraph, cn, size_pt, bold)
+    r = _new_run(paragraph, cn, size_pt, bold, superscript)
     it = OxmlElement("w:instrText")
     it.set(qn("xml:space"), "preserve")
     it.text = instr
     r._element.append(it)
     fld("separate")
-    res = _new_run(paragraph, cn, size_pt, bold)
+    res = _new_run(paragraph, cn, size_pt, bold, superscript)
     res.text = result
     fld("end")
     return res
@@ -340,6 +351,113 @@ def add_ref(paragraph, kind: str, key: str, bold: bool = False):
     return _append_field(paragraph, f" REF {bm} \\h ", label, BODY_CN, BODY_PT, bold)
 
 
+# ---------- 参考文献与引用（域） ----------
+# 文献序号是 SEQ 域，书签只包住数字；正文引用是 REF 域，方括号写在正文里。
+# 这样多篇引用能合并成 [1,3]、[2-4]（GB/T 7714 顺序编码制），增删、调序后全选按 F9 即可重排。
+
+BIB_HANG_CHARS = 2      # 悬挂缩进 2 字符，[1]～[99] 都放得下；≥100 条时自动用 2.5 字符
+
+
+def _cite_info(key: str):
+    if key not in _state["cite_order"]:
+        _state["cite_order"].append(key)
+    n = _state["cite_order"].index(key) + 1
+    bm = _state["cite_bm"].setdefault(key, "Cite%03d_%s" % (n, re.sub(r"[^A-Za-z0-9]", "", key)[:24]))
+    return n, bm
+
+
+def _plain(paragraph, text: str, superscript: bool, bold: bool = False):
+    r = _new_run(paragraph, BODY_CN, BODY_PT, bold, superscript)
+    r.text = text
+    return r
+
+
+def add_cite(paragraph, keys: Sequence[str], superscript: bool = True, bold: bool = False):
+    """插入文献引用。序号按首次引用的先后分配；连续 3 篇及以上写成范围 [2-4]，其余用逗号 [1,3]。"""
+    items = sorted({_cite_info(k) for k in keys})
+    groups, cur = [], [items[0]]
+    for it in items[1:]:
+        if it[0] == cur[-1][0] + 1:
+            cur.append(it)
+        else:
+            groups.append(cur)
+            cur = [it]
+    groups.append(cur)
+    _plain(paragraph, "[", superscript, bold)
+    for gi, g in enumerate(groups):
+        if gi:
+            _plain(paragraph, ",", superscript, bold)
+        if len(g) >= 3:
+            seq = [g[0], None, g[-1]]
+        else:
+            seq = []
+            for i, it in enumerate(g):
+                if i:
+                    seq.append("sep")
+                seq.append(it)
+        for it in seq:
+            if it is None:
+                _plain(paragraph, "-", superscript, bold)
+            elif it == "sep":
+                _plain(paragraph, ",", superscript, bold)
+            else:
+                n, bm = it
+                _append_field(paragraph, f" REF {bm} \\h \\* MERGEFORMAT ", str(n), BODY_CN, BODY_PT, bold, superscript)
+    _plain(paragraph, "]", superscript, bold)
+
+
+def add_references(doc, entries, heading: str = "参考文献", page_break: bool = False,
+                   allow_uncited: bool = False, font_pt: float = BODY_PT):
+    """生成参考文献表（放在正文所有引用之后调用）。
+
+    entries        [(key, "作者. 题名[J]. 刊名, 年, 卷(期): 页码."), ...] 或 {key: 文本}；顺序无所谓，
+                   最终按正文首次引用的先后排序（顺序编码制）
+    page_break     论文类另起一页
+    allow_uncited  默认不允许列出正文没引用的文献（会报错）；True 时排在已引用文献之后
+    版式：不首行缩进，悬挂缩进 2 字符，序号后接制表符，续行与第一行文字对齐；五号，两端对齐。
+    """
+    items = list(entries.items()) if isinstance(entries, dict) else list(entries)
+    texts = dict(items)
+    missing = [k for k in _state["cite_order"] if k not in texts]
+    if missing:
+        raise KeyError(f"正文引用了参考文献表里没有的条目：{missing}")
+    uncited = [k for k, _ in items if k not in _state["cite_order"]]
+    if uncited and not allow_uncited:
+        raise ValueError(f"这些文献正文没有引用，删掉或在正文引用：{uncited}")
+    for k in uncited:
+        _cite_info(k)
+    order = list(_state["cite_order"])
+    if page_break:
+        add_page_break(doc)
+    add_heading(doc, heading, 1)
+    hang_chars = BIB_HANG_CHARS if len(order) < 100 else BIB_HANG_CHARS + 0.5
+    hang_twips = int(round(hang_chars * font_pt * 20))
+    for key in order:
+        n, bm = _cite_info(key)
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        pf = p.paragraph_format
+        pf.space_before = Pt(0)
+        pf.space_after = Pt(0)
+        ppr = p._p.get_or_add_pPr()
+        ind = OxmlElement("w:ind")
+        ind.set(qn("w:left"), str(hang_twips))
+        ind.set(qn("w:leftChars"), "0")
+        ind.set(qn("w:hanging"), str(hang_twips))
+        ind.set(qn("w:hangingChars"), str(int(hang_chars * 100)))
+        _place(ppr, ind)
+        pf.tab_stops.add_tab_stop(Twips(hang_twips))   # 显式制表位，WPS/LibreOffice 也能对齐
+        r = _new_run(p, BODY_CN, font_pt)
+        r.text = "["
+        bm_id = _bookmark(p, bm, True)
+        _append_field(p, " SEQ 参考文献 \\* ARABIC ", str(n), BODY_CN, font_pt)
+        _bookmark_end(p, bm_id)
+        r = _new_run(p, BODY_CN, font_pt)
+        r.text = "]\t" + texts[key].strip()
+    _state["bib_done"] = True
+    return order
+
+
 def finalize(doc):
     """回填所有交叉引用：把先于图表出现的 [[fig:key]] 换成真实书签和编号。
     引用了不存在的 key 会抛错，避免成品里出现“错误！未找到引用源”。"""
@@ -368,6 +486,8 @@ def finalize(doc):
             sib = sib.getnext()
     if missing:
         raise KeyError(f"交叉引用找不到对应的图表：{sorted(set(missing))}")
+    if _state["cite_order"] and not _state["bib_done"]:
+        raise RuntimeError("正文有文献引用，但还没有调用 add_references 生成参考文献表")
     return doc
 
 
@@ -376,7 +496,8 @@ def reset_counters(by_chapter: bool | None = None):
     global CAPTION_BY_CHAPTER
     if by_chapter is not None:
         CAPTION_BY_CHAPTER = by_chapter
-    _state.update({"chapter": 0, "图": 0, "表": 0, "bm": 0, "refs": {}})
+    _state.update({"chapter": 0, "图": 0, "表": 0, "bm": 0, "refs": {}, "cite_order": [], "cite_bm": {},
+                   "bib_done": False})
 
 
 # ---------- 图片 ----------
