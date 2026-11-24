@@ -17,8 +17,9 @@
                 note="注：电压为三次测量平均值。", total_row=True)
     h.add_code(doc, "print('hello')")
     h.add_body(doc, "已有工作多用阶跃响应拟合[[cite:zhang2020,li2019]]。")   # 上标文献引用 [1,2]
-    h.add_references(doc, [("zhang2020", "张三. 题名[J]. 刊名, 2020, 3(2): 1-5."),
-                           ("li2019", "李四. 书名[M]. 北京: 出版社, 2019: 10-12.")])   # 悬挂缩进
+    h.add_references(doc, [                                                 # 悬挂缩进，按首次引用排序
+        ("zhang2020", h.gbt7714("J", ["张三"], "题名", journal="刊名", year=2020, volume=3, issue=2, pages="1-5")),
+        ("li2019", h.gbt7714("M", ["李四"], "书名", place="北京", publisher="出版社", year=2019, pages="10-12"))])
     h.finalize(doc)                          # 回填交叉引用；引用不存在的 key 会报错
     doc.save("课程名_报告标题_姓名.docx")
 
@@ -351,6 +352,116 @@ def add_ref(paragraph, kind: str, key: str, bold: bool = False):
     return _append_field(paragraph, f" REF {bm} \\h ", label, BODY_CN, BODY_PT, bold)
 
 
+# ---------- GB/T 7714—2025 著录格式 ----------
+
+GBT_TYPES = {"M", "J", "N", "C", "D", "R", "S", "P", "EB", "A", "CM", "DS", "PP", "G", "CP", "DB", "Z"}
+GBT_CARRIERS = {"OL", "CD", "DK", "MT", "MM"}
+_CJK = re.compile(r"[一-鿿]")
+
+
+def _dash(pages):
+    return re.sub(r"\s*[–—~～－]\s*", "-", str(pages)) if pages is not None else None
+
+
+def gbt7714(kind: str, authors=None, title: str = "", *, subtitle=None, journal=None, year=None,
+            volume=None, issue=None, pages=None, edition=None, place=None, publisher=None, school=None,
+            conference=None, report_no=None, date=None, std_no=None, patent_no=None, newspaper=None,
+            version=None, platform=None, updated=None, accessed=None, url=None, pid=None,
+            host_authors=None, host_title=None, online=None, lang=None) -> str:
+    """按 GB/T 7714—2025 生成一条著录文本（不含 [n] 序号），交给 add_references。
+
+    kind: J 期刊 | M 图书 | M// 图书析出 | D 学位论文 | C 会议录析出 | R 报告 | S 标准 | P 专利
+          | N 报纸 | EB 网页 | DS 数据集 | PP 预印本
+    authors: 列表，超过 3 个自动写成“前 3 个,等”/“, et al.”。西文名按“Smith J A”传入（姓只首字母大写）。
+    accessed: 引用日期 YYYY-MM-DD，只用于网络资源（EB/DS/PP 必填；其他类型有 url 时可填）。
+    url / pid: 获取和访问路径、永久标识符（DOI、CSTR）；pid 已包含在 url 里时不要重复传。
+    中文条目符号后不加空格，西文条目加空格（lang 不传时按题名有无汉字判断）。
+    缺必备项会直接抛 ValueError，不让残缺条目进文档。
+    """
+    kind = kind.upper()
+    zh = (lang == "zh") if lang else bool(_CJK.search(title or "") or _CJK.search(str(journal or "")))
+    sp = "" if zh else " "
+
+    def need(**kw):
+        miss = [k for k, v in kw.items() if v in (None, "", [])]
+        if miss:
+            raise ValueError(f"[{kind}] 缺必备项：{', '.join(miss)}（题名：{title}）")
+
+    def names(lst):
+        if not lst:
+            return ""
+        lst = [str(a).strip() for a in lst]
+        if len(lst) > 3:
+            lst = lst[:3] + (["等"] if zh else ["et al."])
+        return ("," if zh else ", ").join(lst)
+
+    is_online = online if online is not None else bool(url) or kind in ("EB", "DS", "PP")
+    tag = kind.rstrip("/")
+    if tag == "M//":
+        tag = "M"
+    code = f"[{tag}/OL]" if is_online and tag not in ("S",) else f"[{tag}]"
+    if tag == "S" and is_online:
+        code = "[S/OL]"
+    title = re.sub(r"\s*：\s*", ":" + sp, title.strip())   # 题名与其他题名信息之间用半角冒号
+    full_title = f"{title}:{sp}{subtitle}" if subtitle else title
+    head = f"{names(authors)}.{sp}" if authors else ""
+    p = _dash(pages)
+
+    if kind == "J":
+        need(title=title, journal=journal, year=year)
+        vi = f"{volume}({issue})" if volume and issue else (str(volume) if volume else (f"({issue})" if issue else ""))
+        body = f"{journal},{sp}{year}" + (f",{sp}{vi}" if volume else (vi if issue else ""))
+        body += f":{sp}{p}" if p else ""
+        acc = f"[{accessed}]" if accessed and is_online else ""
+        return f"{head}{full_title}{code}.{sp}{body}{acc}." + "".join(f"{sp}{e}." for e in (url, pid) if e)
+    if kind in ("M", "M//"):
+        need(title=title, publisher=publisher, year=year)
+        ed = f"{edition}.{sp}" if edition else ""
+        pub = f"{place}:{sp}{publisher},{sp}{year}" if place else f"{publisher},{sp}{year}"
+        pub += f":{sp}{p}" if p else ""
+        if kind == "M//":
+            need(host_title=host_title)
+            host = (f"{names(host_authors)}.{sp}" if host_authors else "") + host_title
+            return f"{head}{full_title}{code}//{host}.{sp}{ed}{pub}." + "".join(f"{sp}{e}." for e in (url, pid) if e)
+        return f"{head}{full_title}{code}.{sp}{ed}{pub}." + "".join(f"{sp}{e}." for e in (url, pid) if e)
+    if kind == "D":
+        need(authors=authors, title=title, place=place, school=school, year=year)
+        return (f"{head}{full_title}{code}.{sp}{place}:{sp}{school},{sp}{year}" + (f":{sp}{p}" if p else "") + "."
+                + "".join(f"{sp}{e}." for e in (url, pid) if e))
+    if kind == "C":
+        need(authors=authors, title=title, conference=conference, year=year)
+        return (f"{head}{full_title}{code}//{conference},{sp}{year}" + (f":{sp}{p}" if p else "") + "."
+                + "".join(f"{sp}{e}." for e in (url, pid) if e))
+    if kind == "R":
+        need(title=title, date=date)
+        t = f"{full_title}:{sp}{report_no}" if report_no else full_title
+        return (f"{head}{t}{code}.{sp}{date}" + (f":{sp}{p}" if p else "") + "."
+                + "".join(f"{sp}{e}." for e in (url, pid) if e))
+    if kind == "S":
+        need(std_no=std_no, title=title)
+        no = re.sub(r"(\d)\s*[-–－]\s*(\d{4})$", r"\1—\2", std_no.strip())
+        return f"{no} {full_title}{code}." + "".join(f"{sp}{e}." for e in (url, pid) if e)
+    if kind == "P":
+        need(authors=authors, title=title, patent_no=patent_no, date=date)
+        acc = f"[{accessed}]" if accessed and is_online else ""
+        return f"{head}{full_title}:{sp}{patent_no}{code}.{sp}{date}{acc}." + "".join(f"{sp}{e}." for e in (url, pid) if e)
+    if kind == "N":
+        need(title=title, newspaper=newspaper, date=date)
+        ver = f"({pages})" if pages else ""
+        return f"{head}{full_title}{code}.{sp}{newspaper},{sp}{date}{ver}." + "".join(f"{sp}{e}." for e in (url, pid) if e)
+    if kind == "EB":
+        need(title=title, accessed=accessed, url=url)
+        upd = f"({updated})" if updated else ""
+        return f"{head}{full_title}{code}.{sp}{upd}[{accessed}].{sp}{url}." + (f"{sp}{pid}." if pid else "")
+    if kind in ("DS", "PP"):
+        need(authors=authors, title=title, platform=platform, accessed=accessed, url=url)
+        ver = f"{version}.{sp}" if version else ""
+        upd = f"({updated})" if updated else ""
+        return (f"{head}{full_title}{code}.{sp}{ver}{platform}{upd}[{accessed}].{sp}{url}."
+                + (f"{sp}{pid}." if pid else ""))
+    raise ValueError(f"不支持的文献类型：{kind}")
+
+
 # ---------- 参考文献与引用（域） ----------
 # 文献序号是 SEQ 域，书签只包住数字；正文引用是 REF 域，方括号写在正文里。
 # 这样多篇引用能合并成 [1,3]、[2-4]（GB/T 7714 顺序编码制），增删、调序后全选按 F9 即可重排。
@@ -410,7 +521,7 @@ def add_references(doc, entries, heading: str = "参考文献", page_break: bool
                    allow_uncited: bool = False, font_pt: float = BODY_PT):
     """生成参考文献表（放在正文所有引用之后调用）。
 
-    entries        [(key, "作者. 题名[J]. 刊名, 年, 卷(期): 页码."), ...] 或 {key: 文本}；顺序无所谓，
+    entries        [(key, 著录文本), ...] 或 {key: 文本}；著录文本用 gbt7714(...) 生成（GB/T 7714—2025）。顺序无所谓，
                    最终按正文首次引用的先后排序（顺序编码制）
     page_break     论文类另起一页
     allow_uncited  默认不允许列出正文没引用的文献（会报错）；True 时排在已引用文献之后
