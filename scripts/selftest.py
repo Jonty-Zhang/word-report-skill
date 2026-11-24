@@ -65,6 +65,11 @@ def build_bad(path, big_png, small_png):
             t.cell(i, j).text = f"{i}{j}"
     doc.add_heading("四、总结", 1)
     doc.add_paragraph("综上所述，本文尚未完成全部目标。总而言之，遗憾之处很多！！！")
+    doc.add_paragraph("前人用阶跃响应拟合时间常数[1]，也有用频域方法的[3]。")
+    doc.add_heading("参考文献", 1)
+    for t in ("[1] 张三. 题名[J]. 刊名, 2020, 3(2): 1-5.", "[2] 李四. 书名[M]. 北京: 出版社, 2019."):
+        bp = doc.add_paragraph(t)
+        bp.paragraph_format.first_line_indent = Cm(0.74)
     doc.save(path)
 
 
@@ -93,6 +98,15 @@ def build_good(path, big_png):
     h.add_code(doc, "import numpy as np\ntau = np.polyfit(t, np.log(v_inf - v), 1)[0]")
     h.add_heading(doc, "三、实验总结", 1)
     h.add_body(doc, "拟合得到时间常数 9.8 s，与标称值 10 s 相差 2%。本次只测了一组电阻电容组合，后续可换两组元件复核拟合方法的稳定性。")
+    h.add_body(doc, "用阶跃响应拟合时间常数的做法见[[cite:zhang2020]]，频域方法见[[cite:li2019,wang2021,zhao2022]]，"
+                    "两类方法的比较见[[cite:zhang2020,wang2021]]，其中误差推导可参考文献[[cite-text:li2019]]。")
+    h.add_references(doc, [
+        ("wang2021", "王五, 赵六. 一阶电路时间常数的频域测量[J]. 物理实验, 2021, 41(5): 22-26."),
+        ("zhang2020", "张三. 阶跃响应法测量 RC 电路时间常数[J]. 大学物理, 2020, 39(2): 45-48."),
+        ("zhao2022", "赵七. 电路测量中的数据拟合方法[M]. 北京: 高等教育出版社, 2022: 101-118."),
+        ("li2019", "李四. 电子测量误差分析[M]. 2 版. 北京: 科学出版社, 2019: 33-40. 这一条故意写得很长，"
+                   "用来检查悬挂缩进下续行是否与第一行文字对齐，而不是顶到序号下面。"),
+    ])
     h.add_page_number_footer(doc)
     h.finalize(doc)
     doc.save(path)
@@ -114,13 +128,66 @@ def build_chapter(path, big_png):
     h.add_body(doc, "参数见[[tab:param]]，拟合结果见[[fig:fit]]；装置仍沿用[[fig:setup]]。")
     h.add_table(doc, [["参数", "取值"], ["采样率/Hz", "100"], ["时长/s", "60"]], caption="采集参数", key="param")
     h.add_figure(doc, big_png, "拟合结果", key="fit")
-    h.add_heading(doc, "参考文献", 1)
-    h.add_body(doc, "[1] 示例文献。", indent_chars=0)
+    h.add_body(doc, "采样方法沿用已有工作[[cite:a]]。")
+    h.add_references(doc, [("a", "张三. 题名[J]. 刊名, 2020, 3(2): 1-5.")], page_break=True)
     h.finalize(doc)
     doc.save(path)
 
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def field_result(instr_el):
+    run = instr_el.getparent().getnext()
+    while run is not None:
+        fc = run.find(f"{W}fldChar")
+        if fc is not None and fc.get(f"{W}fldCharType") == "separate":
+            return run.getnext()
+        run = run.getnext()
+    return None
+
+
+def cite_checks(path, expect_cites, expect_bib_starts):
+    """文献引用：正文显示、上标、书签存在；参考文献表：顺序、SEQ 域、悬挂缩进且无首行缩进。"""
+    errs = []
+    d = Document(path)
+    body = d.element.body
+    bms = {b.get(f"{W}name") for b in body.iter(f"{W}bookmarkStart")}
+    shown = []
+    for p in d.paragraphs:
+        if not any((x.text or "").strip().startswith("REF Cite") for x in p._p.iter(f"{W}instrText")):
+            continue
+        import re as _re
+        shown += _re.findall(r"\[[\d,\-]+\]", p.text)
+        for it in p._p.iter(f"{W}instrText"):
+            if (it.text or "").strip().startswith("REF Cite"):
+                if it.text.split()[1] not in bms:
+                    errs.append(f"文献引用指向不存在的书签 {it.text.split()[1]}")
+    if shown != expect_cites:
+        errs.append(f"文献引用显示 {shown} ≠ 期望 {expect_cites}")
+    heads = [i for i, p in enumerate(d.paragraphs) if p.text.strip() == "参考文献"]
+    entries = d.paragraphs[heads[-1] + 1:] if heads else []
+    starts = [e.text[:e.text.index("\t")] if "\t" in e.text else e.text[:4] for e in entries]
+    if starts != expect_bib_starts:
+        errs.append(f"参考文献序号 {starts} ≠ 期望 {expect_bib_starts}")
+    for e in entries:
+        ind = e._p.find(f"{W}pPr/{W}ind")
+        if ind is None or ind.get(f"{W}hanging") in (None, "0") or ind.get(f"{W}firstLine") or ind.get(f"{W}firstLineChars"):
+            errs.append(f"参考文献“{e.text[:12]}”不是悬挂缩进")
+        if ind is not None and ind.get(f"{W}left") != ind.get(f"{W}hanging"):
+            errs.append(f"参考文献“{e.text[:12]}”左缩进≠悬挂量，序号没有顶格")
+        if not any("SEQ 参考文献" in (x.text or "") for x in e._p.iter(f"{W}instrText")):
+            errs.append(f"参考文献“{e.text[:12]}”序号不是 SEQ 域")
+    # 上标
+    for it in body.iter(f"{W}instrText"):
+        if (it.text or "").strip().startswith("REF Cite"):
+            res = field_result(it)
+            sup = res.find(f"{W}rPr/{W}vertAlign") if res is not None else None
+            p_text = "".join(t.text or "" for t in it.getparent().getparent().iter(f"{W}t"))
+            if sup is None and "参考文献[" not in p_text:
+                errs.append("上标引用的结果没有设为上标")
+                break
+    return errs
 
 
 def xml_checks(path, expect_caps, expect_refs):
@@ -161,7 +228,7 @@ def xml_checks(path, expect_caps, expect_refs):
     # 交叉引用：REF 域的缓存结果
     refs = []
     for r_instr in body.iter(f"{W}instrText"):
-        if (r_instr.text or "").strip().startswith("REF"):
+        if (r_instr.text or "").strip().startswith("REF _Ref"):
             run = r_instr.getparent().getnext()
             while run is not None:
                 fc = run.find(f"{W}fldChar")
@@ -205,7 +272,8 @@ def main():
     print(out)
     expected = ["SMALL_FONT", "FORBIDDEN", "HEDGE", "MARKDOWN", "AI_WORD", "EMPTY_PARAS", "FLAW_SPREAD",
                 "PRONOUN_MIX", "IMG_TOO_WIDE", "IMG_DISTORTED", "IMG_LOW_DPI", "IMG_NO_CAPTION", "EXCLAIM",
-                "TABLE_NOT_3LINE", "TABLE_SPACING", "NO_OUTLINE", "CAPTION_NO_FIELD", "XREF_MANUAL", "XREF_DANGLING"]
+                "TABLE_NOT_3LINE", "TABLE_SPACING", "NO_OUTLINE", "CAPTION_NO_FIELD", "XREF_MANUAL", "XREF_DANGLING",
+                "CITE_MANUAL", "CITE_DANGLING", "BIB_UNCITED", "BIB_NO_FIELD", "BIB_INDENT"]
     for c in expected:
         if f"[{c}]" not in out:
             failures.append(f"bad.docx 未查出 {c}")
@@ -236,6 +304,9 @@ def main():
 
     failures += ["good.docx: " + e for e in xml_checks(
         good, ["图 1", "表 1", "表 2"], ["图 1", "表 1", "表 2", "图 1"])]
+    failures += ["good.docx: " + e for e in cite_checks(
+        good, ["[1]", "[2-4]", "[1,3]", "[2]"], ["[1]", "[2]", "[3]", "[4]"])]
+    failures += ["chapter.docx: " + e for e in cite_checks(chap, ["[1]"], ["[1]"])]
     failures += ["chapter.docx: " + e for e in xml_checks(
         chap, ["图 1.1", "图 1.2", "表 2.1", "图 2.1"], ["图 1.1", "图 1.2", "表 2.1", "图 2.1", "图 1.1"])]
 
