@@ -65,9 +65,12 @@ def build_bad(path, big_png, small_png):
             t.cell(i, j).text = f"{i}{j}"
     doc.add_heading("四、总结", 1)
     doc.add_paragraph("综上所述，本文尚未完成全部目标。总而言之，遗憾之处很多！！！")
-    doc.add_paragraph("前人用阶跃响应拟合时间常数[1]，也有用频域方法的[3]。")
+    doc.add_paragraph("前人用阶跃响应拟合时间常数[1]，也有用频域方法的[5]。")
     doc.add_heading("参考文献", 1)
-    for t in ("[1] 张三. 题名[J]. 刊名, 2020, 3(2): 1-5.", "[2] 李四. 书名[M]. 北京: 出版社, 2019."):
+    for t in ("[1] EINSTEIN A. Zur Elektrodynamik bewegter Körper[J]. Annalen der Physik, 1905, 17: 891-921.",
+              "[2] 李四.书名[M].北京:出版社,2019[2024-01-01].",
+              "[3] 王五，赵六．没有类型标识的文献．刊名，2020．",
+              "[4] 某中心.实验指导[EB/OL].https://example.cn/a.html."):
         bp = doc.add_paragraph(t)
         bp.paragraph_format.first_line_indent = Cm(0.74)
     doc.save(path)
@@ -100,12 +103,17 @@ def build_good(path, big_png):
     h.add_body(doc, "拟合得到时间常数 9.8 s，与标称值 10 s 相差 2%。本次只测了一组电阻电容组合，后续可换两组元件复核拟合方法的稳定性。")
     h.add_body(doc, "用阶跃响应拟合时间常数的做法见[[cite:zhang2020]]，频域方法见[[cite:li2019,wang2021,zhao2022]]，"
                     "两类方法的比较见[[cite:zhang2020,wang2021]]，其中误差推导可参考文献[[cite-text:li2019]]。")
+    g = h.gbt7714
     h.add_references(doc, [
-        ("wang2021", "王五, 赵六. 一阶电路时间常数的频域测量[J]. 物理实验, 2021, 41(5): 22-26."),
-        ("zhang2020", "张三. 阶跃响应法测量 RC 电路时间常数[J]. 大学物理, 2020, 39(2): 45-48."),
-        ("zhao2022", "赵七. 电路测量中的数据拟合方法[M]. 北京: 高等教育出版社, 2022: 101-118."),
-        ("li2019", "李四. 电子测量误差分析[M]. 2 版. 北京: 科学出版社, 2019: 33-40. 这一条故意写得很长，"
-                   "用来检查悬挂缩进下续行是否与第一行文字对齐，而不是顶到序号下面。"),
+        ("wang2021", g("J", ["王五", "赵六"], "一阶电路时间常数的频域测量", journal="物理实验", year=2021,
+                       volume=41, issue=5, pages="22-26")),
+        ("zhang2020", g("J", ["Smith J A", "Lee K"], "Time-constant estimation in first-order circuits",
+                        journal="Measurement", year=2021, volume=172, pages="108-115",
+                        url="https://doi.org/10.1016/j.example.2021.108")),
+        ("zhao2022", g("EB", ["某某大学物理实验中心"], "RC电路实验指导", updated="2024-03-01",
+                       accessed="2026-10-08", url="https://example.edu.cn/rc.html")),
+        ("li2019", g("M", ["李四"], "电子测量误差分析：一本书名故意写得很长用来检查悬挂缩进下续行是否与第一行文字对齐",
+                     edition="2版", place="北京", publisher="科学出版社", year=2019, pages="33-40")),
     ])
     h.add_page_number_footer(doc)
     h.finalize(doc)
@@ -129,7 +137,8 @@ def build_chapter(path, big_png):
     h.add_table(doc, [["参数", "取值"], ["采样率/Hz", "100"], ["时长/s", "60"]], caption="采集参数", key="param")
     h.add_figure(doc, big_png, "拟合结果", key="fit")
     h.add_body(doc, "采样方法沿用已有工作[[cite:a]]。")
-    h.add_references(doc, [("a", "张三. 题名[J]. 刊名, 2020, 3(2): 1-5.")], page_break=True)
+    h.add_references(doc, [("a", h.gbt7714("D", ["钱七"], "一阶电路参数辨识方法研究", place="武汉",
+                                            school="某某大学", year=2022, pages=27))], page_break=True)
     h.finalize(doc)
     doc.save(path)
 
@@ -251,6 +260,37 @@ def xml_checks(path, expect_caps, expect_refs):
     return errs
 
 
+def gbt_checks():
+    """gbt7714() 输出与 GB/T 7714—2025 模板逐字比对。"""
+    g = h.gbt7714
+    expect = [
+        (g("J", ["张三", "李四", "王五", "赵六"], "阶跃响应法测量RC电路时间常数", journal="大学物理", year=2020,
+           volume=39, issue=2, pages="45–48"),
+         "张三,李四,王五,等.阶跃响应法测量RC电路时间常数[J].大学物理,2020,39(2):45-48."),
+        (g("J", ["Smith J A", "Lee K"], "Title", journal="Measurement", year=2021, volume=172, pages="108-115",
+           url="https://doi.org/10.1/x"),
+         "Smith J A, Lee K. Title[J/OL]. Measurement, 2021, 172: 108-115. https://doi.org/10.1/x."),
+        (g("M//", ["孙八"], "第3章 一阶电路", host_authors=["周九"], host_title="电路分析基础", place="北京",
+           publisher="高等教育出版社", year=2018, pages="60-75"),
+         "孙八.第3章 一阶电路[M]//周九.电路分析基础.北京:高等教育出版社,2018:60-75."),
+        (g("C", ["孙八"], "RC电路实验教学改进", conference="全国高校物理实验教学研讨会", year=2023, pages="12-15"),
+         "孙八.RC电路实验教学改进[C]//全国高校物理实验教学研讨会,2023:12-15."),
+        (g("R", ["某研究所"], "年度报告", report_no="ABC-01", date="2023-09-30"),
+         "某研究所.年度报告:ABC-01[R].2023-09-30."),
+        (g("S", None, "电工术语 基本术语", std_no="GB/T 2900.1-2008"), "GB/T 2900.1—2008 电工术语 基本术语[S]."),
+        (g("DS", ["张三"], "测量数据", version="V1.0", platform="某数据中心", updated="2023-09-10",
+           accessed="2025-07-15", url="https://e.cn/1", pid="CSTR:1.2"),
+         "张三.测量数据[DS/OL].V1.0.某数据中心(2023-09-10)[2025-07-15].https://e.cn/1.CSTR:1.2."),
+    ]
+    errs = [f"gbt7714 输出 {got} ≠ {want}" for got, want in expect if got != want]
+    try:
+        g("EB", None, "无引用日期的网页", url="https://x.cn")
+        errs.append("gbt7714 网页缺引用日期没有报错")
+    except ValueError:
+        pass
+    return errs
+
+
 def main():
     work = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="word-report-selftest-")
     os.makedirs(work, exist_ok=True)
@@ -273,7 +313,10 @@ def main():
     expected = ["SMALL_FONT", "FORBIDDEN", "HEDGE", "MARKDOWN", "AI_WORD", "EMPTY_PARAS", "FLAW_SPREAD",
                 "PRONOUN_MIX", "IMG_TOO_WIDE", "IMG_DISTORTED", "IMG_LOW_DPI", "IMG_NO_CAPTION", "EXCLAIM",
                 "TABLE_NOT_3LINE", "TABLE_SPACING", "NO_OUTLINE", "CAPTION_NO_FIELD", "XREF_MANUAL", "XREF_DANGLING",
-                "CITE_MANUAL", "CITE_DANGLING", "BIB_UNCITED", "BIB_NO_FIELD", "BIB_INDENT"]
+                "CITE_MANUAL", "CITE_DANGLING", "BIB_UNCITED", "BIB_NO_FIELD", "BIB_INDENT", "BIB_FORMAT"]
+    for frag in ("缺文献类型标识", "非网络文献却写了引用日期", "缺 [引用日期]", "全角著录符号", "EINSTEIN"):
+        if frag not in out:
+            failures.append(f"bad.docx 的 BIB_FORMAT 没查出：{frag}")
     for c in expected:
         if f"[{c}]" not in out:
             failures.append(f"bad.docx 未查出 {c}")
@@ -309,6 +352,8 @@ def main():
     failures += ["chapter.docx: " + e for e in cite_checks(chap, ["[1]"], ["[1]"])]
     failures += ["chapter.docx: " + e for e in xml_checks(
         chap, ["图 1.1", "图 1.2", "表 2.1", "图 2.1"], ["图 1.1", "图 1.2", "表 2.1", "图 2.1", "图 1.1"])]
+
+    failures += gbt_checks()
 
     print("工作目录：", work)
     if failures:
