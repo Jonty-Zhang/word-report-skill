@@ -37,6 +37,13 @@
   CAPTION_SEQ     图/表编号重复或不连续
   XREF_MANUAL     正文里“图 N / 表 N”是手打的，不是交叉引用
   XREF_DANGLING   正文引用了不存在的图/表编号，或出现“错误！未找到引用源”
+  CITE_MANUAL     正文文献引用 [n] 是手打的，不是指向参考文献的交叉引用
+  CITE_DANGLING   引用了参考文献表里不存在的序号
+  CITE_ORDER      首次引用顺序与文献序号不一致（顺序编码制应按首次引用先后编号）
+  BIB_UNCITED     参考文献表里有正文没引用的条目
+  BIB_SEQ         参考文献序号重复或断号
+  BIB_NO_FIELD    文献序号是手打的（不是 SEQ 域或自动编号）
+  BIB_INDENT      参考文献条目首行缩进了，或没有悬挂缩进（续行不对齐）
 ERROR 必须清零；WARN 逐条判断。退出码：有 ERROR 为 1，否则 0。
 """
 from __future__ import annotations
@@ -470,6 +477,8 @@ def check_outline(doc, rep):
 
 def check_captions(doc, rep):
     paras = list(doc.element.body.iter(qn("w:p")))
+    _, bib_entries, bib_bms = bib_section(doc)
+    bib_ids = {id(p) for p in bib_entries}
     caps = {"图": [], "表": []}
     no_field = 0
     cap_ids = set()
@@ -507,7 +516,7 @@ def check_captions(doc, rep):
     manual = 0
     dangling = []
     for p in paras:
-        if id(p) in cap_ids:
+        if id(p) in cap_ids or id(p) in bib_ids:
             continue
         t = para_text(p)
         for s_ in REF_ERROR_STRS:
@@ -516,7 +525,8 @@ def check_captions(doc, rep):
         mentions = MENTION_RE.findall(t)
         if not mentions:
             continue
-        refs = sum(1 for x in instr_texts(p) if x.strip().upper().startswith("REF"))
+        refs = sum(1 for x in instr_texts(p)
+                   if x.strip().upper().startswith("REF") and not (len(x.split()) > 1 and x.split()[1] in bib_bms))
         manual += max(0, len(mentions) - refs)
         for kind, num in mentions:
             num = num.replace("．", ".")
@@ -526,6 +536,144 @@ def check_captions(doc, rep):
         rep.error("XREF_DANGLING", "正文引用了不存在的编号：" + "、".join(sorted(set(dangling))[:8]))
     if manual:
         rep.warn("XREF_MANUAL", f"正文里有 {manual} 处“图 N / 表 N”是手打的，应改用交叉引用（REF 域）")
+
+
+CITE_RE = re.compile(r"\[(\d+(?:\s*[,，\-–~]\s*\d+)*)\]")
+BIB_HEAD_RE = re.compile(r"^参\s*考\s*文\s*献$|^references$|^bibliography$", re.I)
+
+
+def _expand(group: str):
+    out = []
+    for part in re.split(r"\s*[,，]\s*", group.strip()):
+        m = re.match(r"^(\d+)\s*[\-–~]\s*(\d+)$", part)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            out.extend(range(a, b + 1) if b >= a else [a, b])
+        elif part.isdigit():
+            out.append(int(part))
+    return out
+
+
+def _effective_ind(p_el, styles_el):
+    """段落实际缩进：样式链上的 w:ind 被段落自己的 w:ind 按属性覆盖。"""
+    attrs = {}
+    chain = []
+    ppr = p_el.find(qn("w:pPr"))
+    ps = ppr.find(qn("w:pStyle")) if ppr is not None else None
+    sid = ps.get(qn("w:val")) if ps is not None else None
+    if sid is None:
+        for x in styles_el.findall(qn("w:style")):
+            if x.get(qn("w:type")) == "paragraph" and x.get(qn("w:default")) in ("1", "true"):
+                sid = x.get(qn("w:styleId"))
+    depth = 0
+    while sid and depth < 20:
+        node = next((x for x in styles_el.findall(qn("w:style")) if x.get(qn("w:styleId")) == sid), None)
+        if node is None:
+            break
+        chain.append(node)
+        b = node.find(qn("w:basedOn"))
+        sid = b.get(qn("w:val")) if b is not None else None
+        depth += 1
+    for node in reversed(chain):
+        ind = node.find(f"{{{W}}}pPr/{{{W}}}ind")
+        if ind is not None:
+            attrs.update({k.split("}")[1]: v for k, v in ind.attrib.items()})
+    if ppr is not None:
+        ind = ppr.find(qn("w:ind"))
+        if ind is not None:
+            own = {k.split("}")[1]: v for k, v in ind.attrib.items()}
+            # 字符单位与绝对单位互斥：段落设了一种，就覆盖样式里同类的另一种
+            if "hanging" in own or "hangingChars" in own:
+                attrs.pop("firstLine", None)
+                attrs.pop("firstLineChars", None)
+            if "firstLine" in own or "firstLineChars" in own:
+                attrs.pop("hanging", None)
+                attrs.pop("hangingChars", None)
+            attrs.update(own)
+    return attrs
+
+
+def bib_section(doc):
+    """返回 (参考文献标题之前的正文段落, 参考文献条目段落, 条目里的书签名集合)。"""
+    paras = [p for p in doc.element.body.iter(qn("w:p")) if not in_table(p)]
+    styles_el = doc.styles.element
+    head = None
+    for i, p in enumerate(paras):
+        if BIB_HEAD_RE.match(para_text(p).strip().replace(" ", "")):
+            head = i
+    if head is None:
+        return paras, [], set()
+    entries = []
+    for p in paras[head + 1:]:
+        t = para_text(p).strip()
+        if para_outline(p, styles_el) is not None and t:
+            break
+        if t:
+            entries.append(p)
+    bms = {b.get(qn("w:name")) for p in entries for b in p.iter(qn("w:bookmarkStart"))}
+    return paras[:head], entries, bms
+
+
+def check_citations(doc, rep):
+    styles_el = doc.styles.element
+    body_paras, entries, bib_bms = bib_section(doc)
+    if not entries:
+        return
+    nums, no_field, bad_indent, no_hang = [], 0, [], []
+    for k, p in enumerate(entries, 1):
+        t = para_text(p).strip()
+        numbered = p.find(f"{{{W}}}pPr/{{{W}}}numPr") is not None
+        m = re.match(r"^\[(\d+)\]", t)
+        nums.append(int(m.group(1)) if m else (k if numbered else None))
+        if not numbered and not any("SEQ" in x.upper() for x in instr_texts(p)):
+            no_field += 1
+        ind = _effective_ind(p, styles_el)
+        first = int(ind.get("firstLine", 0) or 0) + int(ind.get("firstLineChars", 0) or 0)
+        hang = int(ind.get("hanging", 0) or 0) + int(ind.get("hangingChars", 0) or 0)
+        if first > 0:
+            bad_indent.append(k)
+        elif hang <= 0 and not numbered:
+            no_hang.append(k)
+    if bad_indent:
+        rep.error("BIB_INDENT", f"参考文献第 {', '.join(map(str, bad_indent[:8]))} 条用了首行缩进，应为悬挂缩进（序号顶格，续行与文字对齐）")
+    if no_hang:
+        rep.warn("BIB_INDENT", f"参考文献第 {', '.join(map(str, no_hang[:8]))} 条没有悬挂缩进，续行会顶到序号下面")
+    if no_field:
+        rep.warn("BIB_NO_FIELD", f"{no_field} 条参考文献的序号是手打的，增删文献后不会自动重排")
+    valid = [n for n in nums if n is not None]
+    if valid != list(range(1, len(valid) + 1)):
+        rep.error("BIB_SEQ", f"参考文献序号不连续或重复：{valid[:12]}")
+    total = len(entries)
+
+    cited_first = []
+    manual = 0
+    dangling = set()
+    for p in body_paras:
+        if is_code_like(p):
+            continue  # 代码里的 a[0] 不是引用
+        t = para_text(p)
+        groups = CITE_RE.findall(t)
+        if not groups:
+            continue
+        refs_to_bib = sum(1 for x in instr_texts(p)
+                          if x.strip().upper().startswith("REF") and len(x.split()) > 1 and x.split()[1] in bib_bms)
+        if refs_to_bib == 0:
+            manual += len(groups)
+        for g in groups:
+            for n in _expand(g):
+                if n < 1 or n > total:
+                    dangling.add(n)
+                elif n not in cited_first:
+                    cited_first.append(n)
+    if dangling:
+        rep.error("CITE_DANGLING", f"正文引用了不存在的文献序号：{sorted(dangling)[:10]}（共 {total} 条）")
+    if manual:
+        rep.warn("CITE_MANUAL", f"正文有 {manual} 处文献引用是手打的，应改为指向参考文献序号的交叉引用（REF 域）")
+    uncited = [n for n in range(1, total + 1) if n not in cited_first]
+    if uncited:
+        rep.warn("BIB_UNCITED", f"参考文献第 {uncited[:10]} 条正文没有引用")
+    if cited_first and cited_first != sorted(cited_first):
+        rep.warn("CITE_ORDER", f"首次引用顺序为 {cited_first[:12]}，顺序编码制应按首次引用先后编号")
 
 
 # ---- 检查 ----
@@ -830,6 +978,7 @@ def main(argv=None):
     check_tables(doc, rep)
     check_outline(doc, rep)
     check_captions(doc, rep)
+    check_citations(doc, rep)
     if not (args.no_layout or args.template):
         check_layout(doc, rep)
 
