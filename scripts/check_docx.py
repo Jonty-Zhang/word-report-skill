@@ -29,6 +29,14 @@
   EXCLAIM         感叹号过多
   DASH            破折号过多
   PAGE_SETUP      纸张 / 页边距与默认值不符
+  TABLE_NOT_3LINE 数据表不是三线表（有竖线、表身横线、缺顶/底/栏目线、底纹）
+  TABLE_SPACING   表格内段落有段前/段后间距（含从 Normal 样式继承来的）
+  NO_OUTLINE      长得像标题（一、/（一）/1.1/第X章）却没有大纲级别
+  OUTLINE_SKIP    标题跳级（一级下面直接三级）
+  CAPTION_NO_FIELD 图题/表题编号是手打的，不是 SEQ 域（题注）
+  CAPTION_SEQ     图/表编号重复或不连续
+  XREF_MANUAL     正文里“图 N / 表 N”是手打的，不是交叉引用
+  XREF_DANGLING   正文引用了不存在的图/表编号，或出现“错误！未找到引用源”
 ERROR 必须清零；WARN 逐条判断。退出码：有 ERROR 为 1，否则 0。
 """
 from __future__ import annotations
@@ -225,6 +233,299 @@ def location_of(p_el, body_index):
         anc = anc.getparent()
     idx = body_index.get(id(p_el))
     return f"正文第 {idx} 段" if idx is not None else "正文"
+
+
+# ---- 表格 / 大纲 / 题注 ----
+
+HEADING_LIKE_RES = [
+    re.compile(r"^[一二三四五六七八九十]{1,3}、\S"),
+    re.compile(r"^（[一二三四五六七八九十]{1,3}）\S"),
+    re.compile(r"^\d{1,2}(\.\d{1,2}){1,2}\s*\S"),
+    re.compile(r"^第[一二三四五六七八九十\d]{1,3}[章节]"),
+]
+CAPTION_RE = re.compile(r"^(图|表)\s*(\d+)(?:[.．-](\d+))?(?=\s|[^\d.．-]|$)")
+MENTION_RE = re.compile(r"(图|表)\s*(\d+(?:[.．]\d+)?)(?![\d.．])")
+REF_ERROR_STRS = ["错误！未找到引用源", "错误!未找到引用源", "Error! Reference source not found", "错误！书签未定义"]
+
+
+def style_outline(sid, styles_el, depth=0):
+    """样式链上的大纲级别（0 起算），没有返回 None。"""
+    while sid and depth < 20:
+        st = None
+        for x in styles_el.findall(qn("w:style")):
+            if x.get(qn("w:styleId")) == sid:
+                st = x
+                break
+        if st is None:
+            return None
+        ol = st.find(f"{{{W}}}pPr/{{{W}}}outlineLvl")
+        if ol is not None:
+            return int(ol.get(qn("w:val")))
+        name = st.find(qn("w:name"))
+        nm = (name.get(qn("w:val")) if name is not None else "").lower()
+        m = re.match(r"heading (\d)", nm)
+        if m:  # Word 内置标题样式自带大纲级别
+            return int(m.group(1)) - 1
+        b = st.find(qn("w:basedOn"))
+        sid = b.get(qn("w:val")) if b is not None else None
+        depth += 1
+    return None
+
+
+def para_outline(p_el, styles_el):
+    ppr = p_el.find(qn("w:pPr"))
+    if ppr is not None:
+        ol = ppr.find(qn("w:outlineLvl"))
+        if ol is not None:
+            v = int(ol.get(qn("w:val")))
+            return None if v >= 9 else v
+        ps = ppr.find(qn("w:pStyle"))
+        if ps is not None:
+            return style_outline(ps.get(qn("w:val")), styles_el)
+    return None
+
+
+def in_table(el):
+    anc = el.getparent()
+    while anc is not None and anc.tag != qn("w:body"):
+        if anc.tag == qn("w:tbl"):
+            return True
+        anc = anc.getparent()
+    return False
+
+
+def instr_texts(p_el):
+    out = [(it.text or "") for it in p_el.iter(qn("w:instrText"))]
+    out += [fs.get(qn("w:instr")) or "" for fs in p_el.iter(qn("w:fldSimple"))]
+    return out
+
+
+def _border_visible(el):
+    if el is None:
+        return None
+    val = el.get(qn("w:val"))
+    if val in ("nil", "none"):
+        return 0
+    try:
+        return int(el.get(qn("w:sz")) or 4)
+    except ValueError:
+        return 4
+
+
+def _table_style_borders(tbl, styles_el):
+    tblpr = tbl.find(qn("w:tblPr"))
+    st = tblpr.find(qn("w:tblStyle")) if tblpr is not None else None
+    sid = st.get(qn("w:val")) if st is not None else None
+    chain = []
+    depth = 0
+    while sid and depth < 10:
+        node = None
+        for x in styles_el.findall(qn("w:style")):
+            if x.get(qn("w:styleId")) == sid:
+                node = x
+                break
+        if node is None:
+            break
+        chain.append(node)
+        b = node.find(qn("w:basedOn"))
+        sid = b.get(qn("w:val")) if b is not None else None
+        depth += 1
+    eff = {}
+    for node in reversed(chain):
+        tb = node.find(f"{{{W}}}tblPr/{{{W}}}tblBorders")
+        if tb is not None:
+            for edge in ("top", "left", "bottom", "right", "insideH", "insideV", "start", "end"):
+                e = tb.find(qn(f"w:{edge}"))
+                if e is not None:
+                    eff[edge] = _border_visible(e)
+    if tblpr is not None:
+        tb = tblpr.find(qn("w:tblBorders"))
+        if tb is not None:
+            for edge in ("top", "left", "bottom", "right", "insideH", "insideV", "start", "end"):
+                e = tb.find(qn(f"w:{edge}"))
+                if e is not None:
+                    eff[edge] = _border_visible(e)
+    eff.setdefault("left", eff.get("start", 0) or 0)
+    eff.setdefault("right", eff.get("end", 0) or 0)
+    return eff
+
+
+def check_tables(doc, rep):
+    styles_el = doc.styles.element
+    normal_after = None
+    for x in styles_el.findall(qn("w:style")):
+        if x.get(qn("w:type")) == "paragraph" and x.get(qn("w:default")) in ("1", "true"):
+            sp = x.find(f"{{{W}}}pPr/{{{W}}}spacing")
+            if sp is not None and sp.get(qn("w:after")):
+                normal_after = int(sp.get(qn("w:after")))
+    if normal_after is None:
+        dd = styles_el.find(f"{{{W}}}docDefaults/{{{W}}}pPrDefault/{{{W}}}pPr/{{{W}}}spacing")
+        if dd is not None and dd.get(qn("w:after")):
+            normal_after = int(dd.get(qn("w:after")))
+    spacing_hits = 0
+    for ti, tbl in enumerate(doc.element.body.iter(qn("w:tbl")), 1):
+        if tbl.find(f".//{{{WP}}}inline") is not None or tbl.find(f".//{{{WP}}}anchor") is not None:
+            continue  # 排版用的图片表格
+        rows = tbl.findall(qn("w:tr"))
+        if not rows:
+            continue
+        eff = _table_style_borders(tbl, styles_el)
+        n_rows = len(rows)
+        n_head = sum(1 for r in rows if r.find(f"{{{W}}}trPr/{{{W}}}tblHeader") is not None) or 1
+        problems = []
+        vertical = False
+        top_ok = bottom_ok = header_ok = False
+        body_lines = 0
+        shaded = False
+        for ri, tr in enumerate(rows):
+            cells = tr.findall(qn("w:tc"))
+            row_has_top = row_has_bottom = False
+            for ci, tc in enumerate(cells):
+                tcpr = tc.find(qn("w:tcPr"))
+                tcb = tcpr.find(qn("w:tcBorders")) if tcpr is not None else None
+
+                def edge(name, fallback):
+                    if tcb is not None:
+                        e = tcb.find(qn(f"w:{name}"))
+                        if e is None and name in ("left", "right"):
+                            e = tcb.find(qn("w:start" if name == "left" else "w:end"))
+                        if e is not None:
+                            return _border_visible(e)
+                    return eff.get(fallback, 0) or 0
+
+                l = edge("left", "left" if ci == 0 else "insideV")
+                r = edge("right", "right" if ci == len(cells) - 1 else "insideV")
+                if l or r:
+                    vertical = True
+                t = edge("top", "top" if ri == 0 else "insideH")
+                b = edge("bottom", "bottom" if ri == n_rows - 1 else "insideH")
+                if ri == 0 and t >= 8:
+                    top_ok = True
+                if ri == n_rows - 1 and b >= 8:
+                    bottom_ok = True
+                if ri == n_head - 1 and b > 0:
+                    header_ok = True
+                if ri == n_head and t > 0:
+                    header_ok = True
+                if 0 < ri < n_rows - 1 and ri >= n_head and b > 0:
+                    row_has_bottom = True
+                if ri > n_head and t > 0 and ri != n_rows - 1:
+                    row_has_top = True
+                if tcpr is not None:
+                    shd = tcpr.find(qn("w:shd"))
+                    if shd is not None and (shd.get(qn("w:fill")) or "auto").lower() not in ("auto", "ffffff", "none"):
+                        shaded = True
+                # 段落间距
+                for p in tc.iter(qn("w:p")):
+                    sp = p.find(f"{{{W}}}pPr/{{{W}}}spacing")
+                    after = sp.get(qn("w:after")) if sp is not None else None
+                    before = sp.get(qn("w:before")) if sp is not None else None
+                    if (after is not None and int(after) > 0) or (before is not None and int(before) > 0) \
+                            or (after is None and normal_after and normal_after > 0):
+                        spacing_hits += 1
+            if row_has_top or row_has_bottom:
+                body_lines += 1
+        if vertical:
+            problems.append("有竖线")
+        if not top_ok:
+            problems.append("缺 1 磅以上的顶线")
+        if not bottom_ok:
+            problems.append("缺 1 磅以上的底线")
+        if n_rows > 1 and not header_ok:
+            problems.append("缺栏目线")
+        if body_lines > 1:
+            problems.append(f"表身有 {body_lines} 处横线")
+        if shaded:
+            problems.append("有底纹")
+        if problems:
+            rep.error("TABLE_NOT_3LINE", f"第 {ti} 个表格不是三线表：{'、'.join(problems)}")
+    if spacing_hits:
+        rep.warn("TABLE_SPACING", f"表格内有 {spacing_hits} 个段落带段前/段后间距（含继承自 Normal 样式的），应为 0")
+
+
+def check_outline(doc, rep):
+    styles_el = doc.styles.element
+    paras = [p for p in doc.element.body.iter(qn("w:p")) if not in_table(p)]
+    fake = []
+    prev = None
+    skips = []
+    for i, p in enumerate(paras):
+        t = para_text(p).strip()
+        if not t:
+            continue
+        lvl = para_outline(p, styles_el)
+        if lvl is not None:
+            if prev is not None and lvl > prev + 1:
+                skips.append(t[:20])
+            prev = lvl
+            continue
+        if len(t) <= 30 and not re.search(r"[。；：:，,]$", t) and any(rx.match(t) for rx in HEADING_LIKE_RES):
+            if not t.endswith("。"):
+                fake.append(t[:20])
+    if fake:
+        rep.warn("NO_OUTLINE", f"{len(fake)} 个段落像标题但没有大纲级别，导航窗格里看不到：" + "；".join(fake[:6]))
+    if skips:
+        rep.warn("OUTLINE_SKIP", "标题跳级：" + "；".join(skips[:6]))
+
+
+def check_captions(doc, rep):
+    paras = list(doc.element.body.iter(qn("w:p")))
+    caps = {"图": [], "表": []}
+    no_field = 0
+    cap_ids = set()
+    for p in paras:
+        if in_table(p) and p.find(f".//{{{WP}}}inline") is None:
+            continue
+        t = para_text(p).strip()
+        m = CAPTION_RE.match(t)
+        if not m or len(t) > 60:
+            continue
+        kind = m.group(1)
+        a, b = m.group(2), m.group(3)
+        caps[kind].append((int(a), int(b)) if b else (None, int(a)))
+        cap_ids.add(id(p))
+        if not any("SEQ" in x.upper() for x in instr_texts(p)):
+            no_field += 1
+    if no_field:
+        rep.warn("CAPTION_NO_FIELD", f"{no_field} 个图题/表题的编号是手打的，应改用题注（SEQ 域），增删图表后才能自动重排")
+    known = {"图": set(), "表": set()}
+    for kind, lst in caps.items():
+        seen = set()
+        expect = {}
+        bad = []
+        for ch, n in lst:
+            known[kind].add(f"{ch}.{n}" if ch is not None else str(n))
+            if (ch, n) in seen:
+                bad.append(f"重复 {kind}{'' if ch is None else str(ch) + '.'}{n}")
+            seen.add((ch, n))
+            want = expect.get(ch, 0) + 1
+            if n != want:
+                bad.append(f"{kind}{'' if ch is None else str(ch) + '.'}{n} 前缺 {kind}{'' if ch is None else str(ch) + '.'}{want}")
+            expect[ch] = n
+        if bad:
+            rep.error("CAPTION_SEQ", f"{kind}编号有问题：" + "；".join(bad[:6]))
+    manual = 0
+    dangling = []
+    for p in paras:
+        if id(p) in cap_ids:
+            continue
+        t = para_text(p)
+        for s_ in REF_ERROR_STRS:
+            if s_ in t:
+                rep.error("XREF_DANGLING", f"出现“{s_}”：“{t.strip()[:40]}”")
+        mentions = MENTION_RE.findall(t)
+        if not mentions:
+            continue
+        refs = sum(1 for x in instr_texts(p) if x.strip().upper().startswith("REF"))
+        manual += max(0, len(mentions) - refs)
+        for kind, num in mentions:
+            num = num.replace("．", ".")
+            if known[kind] and num not in known[kind]:
+                dangling.append(f"{kind} {num}")
+    if dangling:
+        rep.error("XREF_DANGLING", "正文引用了不存在的编号：" + "、".join(sorted(set(dangling))[:8]))
+    if manual:
+        rep.warn("XREF_MANUAL", f"正文里有 {manual} 处“图 N / 表 N”是手打的，应改用交叉引用（REF 域）")
 
 
 # ---- 检查 ----
@@ -526,6 +827,9 @@ def main(argv=None):
     check_fonts(doc, rep, args.min_font, extra_xml_parts(doc))
     check_images(doc, rep, text_w, args.max_fig_width, args.max_fig_height, args.min_dpi)
     check_text(doc, rep)
+    check_tables(doc, rep)
+    check_outline(doc, rep)
+    check_captions(doc, rep)
     if not (args.no_layout or args.template):
         check_layout(doc, rep)
 
