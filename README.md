@@ -12,6 +12,7 @@
 - **表格**：一律三线表（顶底线 1.5 磅、栏目线 0.75 磅、无竖线无底纹），列宽按内容自动分配，支持二级表头、合计线、表注。
 - **大纲**：标题都带大纲级别，Word 导航窗格里能看到完整层级。
 - **题注与交叉引用**：图表编号用题注，正文引用用交叉引用，增删图表后按 F9 全部重排；论文和长文档按章编号（图 3.16）。
+- **参考文献**：正文引用是指向文献序号的交叉引用（上标，[1,3]、[2-4]），文献表按首次引用排序，悬挂缩进 2 字符、序号顶格。
 - **排版**：无模板时按 `references/format-spec.md`（A4、2.5 cm、宋体五号、1.5 倍行距、标题层级……），有模板严格按模板。
 - **去 AI 味**：`references/wording.md` 里有面向学术文体的 humanizer 清单。
 
@@ -22,9 +23,9 @@ SKILL.md                     主流程、硬规则速查、交付前检查
 references/format-spec.md    排版规范全文（含图片尺寸表）
 references/wording.md        禁用表述、缺点写法、去 AI 味
 references/report-types.md   各文体的自称、语气、结构
-scripts/check_docx.py        成品检查：字号、三线表、大纲、题注与引用、图片、禁用短语、缺点分布、自称、空段、页面
+scripts/check_docx.py        成品检查：字号、三线表、大纲、题注与引用、参考文献、图片、禁用短语、缺点分布、自称、空段、页面
 scripts/fit_images.py        修正 docx 里超尺寸 / 变形的图片
-scripts/docx_helpers.py      python-docx 建文档的小工具（字体、带大纲的标题、三线表、插图、题注与交叉引用、代码块）
+scripts/docx_helpers.py      python-docx 建文档的小工具（字体、带大纲的标题、三线表、插图、题注与交叉引用、文献引用与参考文献表、代码块）
 scripts/selftest.py          自测
 ```
 
