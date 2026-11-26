@@ -670,6 +670,7 @@ def add_side_by_side_figures(doc, image_paths: Sequence[str], caption: str, tota
     table = doc.add_table(rows=2 if sub_labels else 1, cols=n)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
+    _plain_table_style(doc, table)
     _set_tbl_borders(table, top=0, bottom=0)  # 排版用的无边框表
     for tag in ("w:top", "w:bottom"):
         el = table._tbl.tblPr.find(qn("w:tblBorders")).find(qn(tag))
@@ -730,6 +731,26 @@ def _border_el(tag: str, val: str = "single", sz: int = 0):
         el.set(qn("w:space"), "0")
         el.set(qn("w:color"), "000000")
     return el
+
+
+def _plain_table_style(doc, table):
+    """显式套用“普通表格”样式并关闭全部条件格式。
+    不这样做时，表格会继承文档（模板）的默认表格样式，首行/末行/镶边行的条件格式可能自动加线，变成双线。"""
+    tblpr = table._tbl.tblPr
+    try:
+        table.style = doc.styles["Normal Table"]
+    except KeyError:
+        for old in tblpr.findall(qn("w:tblStyle")):
+            tblpr.remove(old)
+    look = OxmlElement("w:tblLook")
+    look.set(qn("w:val"), "0000")
+    for k in ("firstRow", "lastRow", "firstColumn", "lastColumn"):
+        look.set(qn(f"w:{k}"), "0")
+    look.set(qn("w:noHBand"), "1")
+    look.set(qn("w:noVBand"), "1")
+    _place(tblpr, look)
+    for cs in tblpr.findall(qn("w:tblCellSpacing")):   # 单元格间距会把每条线画成双线
+        tblpr.remove(cs)
 
 
 def _set_tbl_borders(table, top=RULE_THICK, bottom=RULE_THICK):
@@ -842,7 +863,8 @@ def add_table(doc, rows: Sequence[Sequence[str]], caption: str | None = None, he
     total_row     最后一行是合计/平均，上沿加 0.5 磅合计线
     note          表注，以“注：”开头，放在表下
     key           交叉引用用的名字，正文里写 [[tab:key]]
-    其余：表题在上；顶底线 1.5 磅，栏目线 0.75 磅，分组线 0.5 磅；无竖线、无底纹；
+    其余：表题在上；顶底线 1.5 磅，栏目线 0.75 磅，分组线 0.5 磅，全部单实线；无竖线、无底纹；
+    “普通表格”样式并关闭条件格式（不继承模板的默认表格样式），不设单元格间距；
     表头居中不加粗；数字列和短列居中，长文字列左对齐；单倍行距、段前段后 0；
     行不跨页、表头重复；总宽 60%～100% 正文宽，自动列宽。
     """
@@ -858,6 +880,7 @@ def add_table(doc, rows: Sequence[Sequence[str]], caption: str | None = None, he
     n_head = (2 if group_header else 1) if header else 0
     n_rows = len(rows) + (1 if group_header else 0)
     table = doc.add_table(rows=n_rows, cols=n_cols)
+    _plain_table_style(doc, table)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
 
