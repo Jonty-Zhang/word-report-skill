@@ -29,7 +29,9 @@
   EXCLAIM         感叹号过多
   DASH            破折号过多
   PAGE_SETUP      纸张 / 页边距与默认值不符
-  TABLE_NOT_3LINE 数据表不是三线表（有竖线、表身横线、缺顶/底/栏目线、底纹）
+  TABLE_NOT_3LINE 数据表不是三线表：双线/虚线等非单实线、单元格间距、段落边框、带条件格式边框的表格样式
+                  （含文档默认表格样式）、竖线、表身横线、缺顶/底/栏目线、底纹
+  TABLE_RULE_WEIGHT 三线的线宽不对（顶底 1.5 磅、栏目线 0.75 磅）
   TABLE_SPACING   表格内段落有段前/段后间距（含从 Normal 样式继承来的）
   NO_OUTLINE      长得像标题（一、/（一）/1.1/第X章）却没有大纲级别
   OUTLINE_SKIP    标题跳级（一级下面直接三级）
@@ -321,42 +323,96 @@ def _border_visible(el):
         return 4
 
 
-def _table_style_borders(tbl, styles_el):
+SOLID = ("single",)
+EDGES = ("top", "left", "bottom", "right", "insideH", "insideV", "start", "end")
+LOOK_BITS = {"firstRow": 0x0020, "lastRow": 0x0040, "firstColumn": 0x0080, "lastColumn": 0x0100,
+             "noHBand": 0x0200, "noVBand": 0x0400}
+
+
+def _table_style_chain(tbl, styles_el):
+    """表格样式链；表格没指定样式时用文档的默认表格样式（模板常把它设成带线的样式）。"""
     tblpr = tbl.find(qn("w:tblPr"))
     st = tblpr.find(qn("w:tblStyle")) if tblpr is not None else None
     sid = st.get(qn("w:val")) if st is not None else None
-    chain = []
-    depth = 0
-    while sid and depth < 10:
-        node = None
+    if sid is None:
         for x in styles_el.findall(qn("w:style")):
-            if x.get(qn("w:styleId")) == sid:
-                node = x
-                break
+            if x.get(qn("w:type")) == "table" and x.get(qn("w:default")) in ("1", "true"):
+                sid = x.get(qn("w:styleId"))
+    chain, depth = [], 0
+    while sid and depth < 10:
+        node = next((x for x in styles_el.findall(qn("w:style")) if x.get(qn("w:styleId")) == sid), None)
         if node is None:
             break
         chain.append(node)
         b = node.find(qn("w:basedOn"))
         sid = b.get(qn("w:val")) if b is not None else None
         depth += 1
-    eff = {}
-    for node in reversed(chain):
-        tb = node.find(f"{{{W}}}tblPr/{{{W}}}tblBorders")
-        if tb is not None:
-            for edge in ("top", "left", "bottom", "right", "insideH", "insideV", "start", "end"):
-                e = tb.find(qn(f"w:{edge}"))
-                if e is not None:
-                    eff[edge] = _border_visible(e)
+    return chain
+
+
+def _table_style_borders(tbl, styles_el, chain=None):
+    tblpr = tbl.find(qn("w:tblPr"))
+    chain = chain if chain is not None else _table_style_chain(tbl, styles_el)
+    eff, vals = {}, {}
+    sources = [node.find(f"{{{W}}}tblPr/{{{W}}}tblBorders") for node in reversed(chain)]
     if tblpr is not None:
-        tb = tblpr.find(qn("w:tblBorders"))
-        if tb is not None:
-            for edge in ("top", "left", "bottom", "right", "insideH", "insideV", "start", "end"):
-                e = tb.find(qn(f"w:{edge}"))
-                if e is not None:
-                    eff[edge] = _border_visible(e)
+        sources.append(tblpr.find(qn("w:tblBorders")))
+    for tb in sources:
+        if tb is None:
+            continue
+        for edge in EDGES:
+            e = tb.find(qn(f"w:{edge}"))
+            if e is not None:
+                eff[edge] = _border_visible(e)
+                vals[edge] = e.get(qn("w:val"))
     eff.setdefault("left", eff.get("start", 0) or 0)
     eff.setdefault("right", eff.get("end", 0) or 0)
-    return eff
+    return eff, vals
+
+
+def _look_flags(tbl):
+    """tblLook：哪些条件格式开着。没写 tblLook 时按 Word 默认（首行、首列开）。"""
+    look = tbl.find(f"{{{W}}}tblPr/{{{W}}}tblLook")
+    flags = {"firstRow": True, "lastRow": False, "firstColumn": True, "lastColumn": False,
+             "noHBand": False, "noVBand": True}
+    if look is None:
+        return flags
+    v = look.get(qn("w:val"))
+    if v:
+        try:
+            n = int(v, 16)
+            flags = {k: bool(n & bit) for k, bit in LOOK_BITS.items()}
+        except ValueError:
+            pass
+    for k in LOOK_BITS:
+        a = look.get(qn(f"w:{k}"))
+        if a is not None:
+            flags[k] = a in ("1", "true", "on")
+    return flags
+
+
+def _style_conditional_lines(tbl, chain):
+    """样式里的条件格式（首行、末行、镶边行……）会不会给表格加线。"""
+    flags = _look_flags(tbl)
+    active = {"wholeTable": True, "firstRow": flags["firstRow"], "lastRow": flags["lastRow"],
+              "firstCol": flags["firstColumn"], "lastCol": flags["lastColumn"],
+              "band1Horz": not flags["noHBand"], "band2Horz": not flags["noHBand"],
+              "band1Vert": not flags["noVBand"], "band2Vert": not flags["noVBand"],
+              "nwCell": flags["firstRow"] and flags["firstColumn"], "neCell": flags["firstRow"] and flags["lastColumn"],
+              "swCell": flags["lastRow"] and flags["firstColumn"], "seCell": flags["lastRow"] and flags["lastColumn"]}
+    hits = []
+    for node in chain:
+        name_el = node.find(qn("w:name"))
+        sname = name_el.get(qn("w:val")) if name_el is not None else node.get(qn("w:styleId"))
+        for cond in node.findall(qn("w:tblStylePr")):
+            typ = cond.get(qn("w:type"))
+            if not active.get(typ, False):
+                continue
+            for b in list(cond.iter(qn("w:tcBorders"))) + list(cond.iter(qn("w:tblBorders"))):
+                if any(_border_visible(e) for e in b):
+                    hits.append(f"{sname}/{typ}")
+                    break
+    return sorted(set(hits))
 
 
 def check_tables(doc, rep):
@@ -378,14 +434,30 @@ def check_tables(doc, rep):
         rows = tbl.findall(qn("w:tr"))
         if not rows:
             continue
-        eff = _table_style_borders(tbl, styles_el)
+        chain = _table_style_chain(tbl, styles_el)
+        eff, eff_vals = _table_style_borders(tbl, styles_el, chain)
         n_rows = len(rows)
         n_head = sum(1 for r in rows if r.find(f"{{{W}}}trPr/{{{W}}}tblHeader") is not None) or 1
         problems = []
         vertical = False
-        top_ok = bottom_ok = header_ok = False
+        top_sz = bottom_sz = header_sz = 0
         body_lines = 0
         shaded = False
+        nonsolid = set()
+        # 线型：凡是画出来的线，都只能是单实线
+        for edge, v in eff_vals.items():
+            if v not in (None, "nil", "none") and v not in SOLID and eff.get(edge):
+                nonsolid.add(v)
+        for b in tbl.iter(qn("w:tcBorders")):
+            for e in b:
+                v = e.get(qn("w:val"))
+                if v not in (None, "nil", "none") and v not in SOLID:
+                    nonsolid.add(v)
+        # 单元格间距：会把每条线画成两条
+        spacing_set = any(int(cs.get(qn("w:w")) or 0) > 0 for cs in tbl.iter(qn("w:tblCellSpacing")))
+        # 单元格里的段落边框：常被拿来“补线”，结果出现双线
+        pbdr = any(p.find(f"{{{W}}}pPr/{{{W}}}pBdr") is not None for p in tbl.iter(qn("w:p")))
+        cond_lines = _style_conditional_lines(tbl, chain)
         for ri, tr in enumerate(rows):
             cells = tr.findall(qn("w:tc"))
             row_has_top = row_has_bottom = False
@@ -408,14 +480,14 @@ def check_tables(doc, rep):
                     vertical = True
                 t = edge("top", "top" if ri == 0 else "insideH")
                 b = edge("bottom", "bottom" if ri == n_rows - 1 else "insideH")
-                if ri == 0 and t >= 8:
-                    top_ok = True
-                if ri == n_rows - 1 and b >= 8:
-                    bottom_ok = True
+                if ri == 0:
+                    top_sz = max(top_sz, t)
+                if ri == n_rows - 1:
+                    bottom_sz = max(bottom_sz, b)
                 if ri == n_head - 1 and b > 0:
-                    header_ok = True
+                    header_sz = max(header_sz, b)
                 if ri == n_head and t > 0:
-                    header_ok = True
+                    header_sz = max(header_sz, t)
                 if 0 < ri < n_rows - 1 and ri >= n_head and b > 0:
                     row_has_bottom = True
                 if ri > n_head and t > 0 and ri != n_rows - 1:
@@ -424,7 +496,6 @@ def check_tables(doc, rep):
                     shd = tcpr.find(qn("w:shd"))
                     if shd is not None and (shd.get(qn("w:fill")) or "auto").lower() not in ("auto", "ffffff", "none"):
                         shaded = True
-                # 段落间距
                 for p in tc.iter(qn("w:p")):
                     sp = p.find(f"{{{W}}}pPr/{{{W}}}spacing")
                     after = sp.get(qn("w:after")) if sp is not None else None
@@ -434,20 +505,38 @@ def check_tables(doc, rep):
                         spacing_hits += 1
             if row_has_top or row_has_bottom:
                 body_lines += 1
+        if nonsolid:
+            problems.append(f"线型不是单实线（{'、'.join(sorted(nonsolid))}），双线表不允许")
+        if spacing_set:
+            problems.append("设置了单元格间距，每条线都会显示成双线")
+        if pbdr:
+            problems.append("单元格段落带段落边框，会和表格线叠成双线")
+        if cond_lines:
+            problems.append(f"套用的表格样式带条件格式边框（{'、'.join(cond_lines[:4])}），会自动加线；改用“普通表格”并关闭条件格式")
         if vertical:
             problems.append("有竖线")
-        if not top_ok:
+        if top_sz < 8:
             problems.append("缺 1 磅以上的顶线")
-        if not bottom_ok:
+        if bottom_sz < 8:
             problems.append("缺 1 磅以上的底线")
-        if n_rows > 1 and not header_ok:
-            problems.append("缺栏目线")
+        if n_rows > 1 and not header_sz:
+            problems.append("缺栏目线（只有上下两条线不算三线表）")
         if body_lines > 1:
             problems.append(f"表身有 {body_lines} 处横线")
         if shaded:
             problems.append("有底纹")
         if problems:
-            rep.error("TABLE_NOT_3LINE", f"第 {ti} 个表格不是三线表：{'、'.join(problems)}")
+            rep.error("TABLE_NOT_3LINE", f"第 {ti} 个表格不是三线表：{'；'.join(problems)}")
+        else:
+            weights = []
+            if not 10 <= top_sz <= 14 or not 10 <= bottom_sz <= 14:
+                weights.append(f"顶/底线 {top_sz / 8:g}/{bottom_sz / 8:g} 磅（应 1.5 磅）")
+            if n_rows > 1 and not 4 <= header_sz <= 8:
+                weights.append(f"栏目线 {header_sz / 8:g} 磅（应 0.75 磅）")
+            if n_rows > 1 and header_sz >= min(top_sz, bottom_sz):
+                weights.append("栏目线不比顶底线细，层次不清")
+            if weights:
+                rep.warn("TABLE_RULE_WEIGHT", f"第 {ti} 个表格线宽不合规范：{'；'.join(weights)}")
     if spacing_hits:
         rep.warn("TABLE_SPACING", f"表格内有 {spacing_hits} 个段落带段前/段后间距（含继承自 Normal 样式的），应为 0")
 
