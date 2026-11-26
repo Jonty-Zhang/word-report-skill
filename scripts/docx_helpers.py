@@ -148,13 +148,15 @@ def _style_fonts(style, cn: str, en: str, size_pt: float, bold: bool | None = No
             del rfonts.attrib[qn(k)]
 
 
-def _set_first_line_chars(paragraph, chars: int):
-    """首行缩进按“字符”设置，Word 里显示为“首行缩进 2 字符”。"""
+def _set_first_line_chars(paragraph, chars: int, size_pt: float | None = None):
+    """首行缩进按“字符”设置，Word 里显示为“首行缩进 2 字符”。
+    同时写等值的 firstLine 磅值：WPS、预览器和部分转换工具只认 firstLine。"""
     ppr = paragraph._p.get_or_add_pPr()
     ind = ppr.find(qn("w:ind"))
     if ind is None:
         ind = _place(ppr, OxmlElement("w:ind"))
     if chars:
+        ind.set(qn("w:firstLine"), str(int(round(chars * (size_pt or BODY_PT) * 20))))
         ind.set(qn("w:firstLineChars"), str(chars * 100))
     else:
         for k in ("w:firstLineChars", "w:firstLine"):
@@ -582,12 +584,24 @@ def has_page_numbers(doc) -> bool:
     return False
 
 
-def finalize(doc, page_numbers: bool = True):
+def finalize(doc, page_numbers: bool = True, fix_gaps: bool = True):
     """回填所有交叉引用：把先于图表出现的 [[fig:key]] 换成真实书签和编号。
     引用了不存在的 key 会抛错，避免成品里出现“错误！未找到引用源”。
-    页码：文档还没有页码时，自动在页脚居中加上（五号）。"""
+    页码：文档还没有页码时，自动在页脚居中加上（五号）。
+    fix_gaps：估算分页，图表放不下时不让上一页留大块空白（缩图、挪正文、短表改为允许跨页，见 pagination.py）。
+    改动记在 layout_log() 里并打印出来，交付时要告诉用户。"""
     if page_numbers and not has_page_numbers(doc):
         add_page_number_footer(doc)
+    _state["layout_log"] = []
+    if fix_gaps:
+        import sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import pagination
+        _state["layout_log"] = pagination.reduce_float_gaps(doc, split_mode="flow")   # 报告不加“续表”字样
+        for line in _state["layout_log"]:
+            print("[分页]", line)
     missing = []
     for it in doc.element.body.iter(qn("w:instrText")):
         txt = it.text or ""
@@ -616,6 +630,11 @@ def finalize(doc, page_numbers: bool = True):
     if _state["cite_order"] and not _state["bib_done"]:
         raise RuntimeError("正文有文献引用，但还没有调用 add_references 生成参考文献表")
     return doc
+
+
+def layout_log() -> list:
+    """最近一次 finalize 对分页做的改动（中文说明）。"""
+    return list(_state.get("layout_log", []))
 
 
 def reset_counters(by_chapter: bool | None = None):
