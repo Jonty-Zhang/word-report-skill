@@ -260,6 +260,89 @@ def xml_checks(path, expect_caps, expect_refs):
     return errs
 
 
+def table_variant_checks(work):
+    """各种“双线表”必须被查出；模板默认表格样式带线时，add_table 仍要产出干净的三线表。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    rows = [["时间/s", "电压/V"], ["0", "0.00"], ["5", "3.16"]]
+    errs = []
+
+    def make(name, mutate):
+        d = Document()
+        h.reset_counters()
+        h.setup_document(d)
+        t = h.add_table(d, rows, caption="测试")
+        mutate(d, t)
+        path = os.path.join(work, f"tbl_{name}.docx")
+        d.save(path)
+        return path
+
+    def double_rules(d, t):
+        for e in ("top", "bottom"):
+            t._tbl.tblPr.find(qn("w:tblBorders")).find(qn("w:" + e)).set(qn("w:val"), "double")
+
+    def header_double(d, t):
+        for c in t.rows[0].cells:
+            c._tc.tcPr.find(qn("w:tcBorders")).find(qn("w:bottom")).set(qn("w:val"), "double")
+
+    def cell_spacing(d, t):
+        cs = OxmlElement("w:tblCellSpacing")
+        cs.set(qn("w:w"), "20")
+        cs.set(qn("w:type"), "dxa")
+        h._place(t._tbl.tblPr, cs)
+
+    def styled(d, t):
+        t.style = d.styles["Light List Accent 1"]
+        t._tbl.tblPr.remove(t._tbl.tblPr.find(qn("w:tblLook")))
+
+    def para_border(d, t):
+        ppr = t.cell(0, 0).paragraphs[0]._p.get_or_add_pPr()
+        bdr = OxmlElement("w:pBdr")
+        b = OxmlElement("w:bottom")
+        b.set(qn("w:val"), "single")
+        b.set(qn("w:sz"), "6")
+        bdr.append(b)
+        h._place(ppr, bdr)
+
+    def two_lines(d, t):
+        for c in t.rows[0].cells:
+            tcb = c._tc.tcPr.find(qn("w:tcBorders"))
+            tcb.remove(tcb.find(qn("w:bottom")))
+
+    for name, fn in (("double_rules", double_rules), ("header_double", header_double),
+                     ("cell_spacing", cell_spacing), ("style_cond", styled), ("para_border", para_border),
+                     ("two_lines", two_lines)):
+        code, out = run("check_docx.py", make(name, fn))
+        if "[TABLE_NOT_3LINE]" not in out:
+            errs.append(f"{name} 这种双线/非三线表没有被查出")
+
+    # 模板的默认表格样式是带线的样式：add_table 必须不受影响
+    d = Document()
+    for st in d.styles.element.findall(qn("w:style")):
+        if st.get(qn("w:type")) == "table":
+            if st.get(qn("w:styleId")) == "LightList-Accent1":
+                st.set(qn("w:default"), "1")
+            elif st.get(qn("w:default")):
+                del st.attrib[qn("w:default")]
+    h.reset_counters()
+    h.setup_document(d)
+    h.add_table(d, rows, caption="模板默认样式带线")
+    path = os.path.join(work, "tbl_template_default.docx")
+    d.save(path)
+    code, out = run("check_docx.py", path)
+    if "[TABLE_" in out:
+        errs.append("模板默认表格样式带线时，add_table 生成的表没通过三线表检查")
+    # 反过来：同一模板下 doc.add_table 不处理，要被查出
+    d2 = Document(path)
+    d2.add_table(rows=2, cols=2).cell(0, 0).text = "x"
+    p2 = os.path.join(work, "tbl_template_raw.docx")
+    d2.save(p2)
+    code, out = run("check_docx.py", p2)
+    if "第 2 个表格不是三线表" not in out:
+        errs.append("模板默认样式下直接 doc.add_table 的表没被查出")
+    return errs
+
+
 def gbt_checks():
     """gbt7714() 输出与 GB/T 7714—2025 模板逐字比对。"""
     g = h.gbt7714
@@ -354,6 +437,7 @@ def main():
         chap, ["图 1.1", "图 1.2", "表 2.1", "图 2.1"], ["图 1.1", "图 1.2", "表 2.1", "图 2.1", "图 1.1"])]
 
     failures += gbt_checks()
+    failures += table_variant_checks(work)
 
     print("工作目录：", work)
     if failures:
