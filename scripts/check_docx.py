@@ -107,6 +107,9 @@ AI_WORDS = {
 }
 SUMMARY_WORDS = ["综上所述", "总而言之", "总的来说", "总之"]
 FLAW_WORDS = ["不足", "局限", "缺陷", "缺点", "有待", "尚未", "仍需", "仍有", "不够", "欠缺", "改进空间", "遗憾", "未能", "有限"]
+# “不足1 h”“不足5%”是数量比较，“有限元”“有限公司”是术语，都不算缺点表述
+FLAW_RE = re.compile(r"不足(?![\d０-９一二三四五六七八九十百千万几半])|局限|缺陷|缺点|有待|尚未|仍需|仍有|不够|欠缺"
+                     r"|改进空间|遗憾|未能|有限(?!元|公司|责任|集|域|差分|状态|个)")
 FORMAL_SELF = ["笔者", "本文"]
 CASUAL_SELF_RE = re.compile(r"我(?!们|国|校|院|方|省|市|党|军)")
 WE_RE = re.compile(r"我们")
@@ -995,7 +998,7 @@ def check_text(doc, rep):
         if is_heading(p, info) and t.strip():
             section = t.strip()[:20]
             continue
-        if any(w in t for w in FLAW_WORDS):
+        if FLAW_RE.search(t):
             sec_hits[section].append(i + 1)
             total += 1
     if len(sec_hits) >= 3 or total >= 6:
