@@ -33,7 +33,7 @@ description: Use when writing or formatting a Chinese course deliverable as a Wo
 
 | 项目 | 默认值（无模板时） |
 |---|---|
-| 页面 | A4 纵向，四边 2.5 cm，不设装订线 |
+| 页面 | A4 纵向，四边 2.5 cm，不设装订线；**一律加页码**，页脚居中，五号（`finalize` 自动加） |
 | 正文 | 宋体五号（10.5 pt），英文/数字 Times New Roman，首行缩进 2 字符，两端对齐，1.5 倍行距 |
 | 一级标题 | 宋体小三加粗；二级 黑体小四不加粗；三级 黑体五号不加粗 |
 | **字号下限** | **全文任何位置不小于 10 pt**：表格、图题、脚注、页码、代码、参考文献、页眉页脚都算。用户或模板明确要求更小时才例外 |
@@ -111,6 +111,7 @@ description: Use when writing or formatting a Chinese course deliverable as a Wo
 
 - [ ] 文体、自称、语气一致，且符合 report-types.md
 - [ ] `check_docx.py` 0 ERROR；WARN 已逐条处理或说明
+- [ ] 有页码（页脚居中）
 - [ ] 通读一遍成品文字：没有"用户/AI/要求/以下是"，没有 Markdown 残留，没有让步式自贬，缺点只在一处
 - [ ] 每张图有图题、每张表有表题，编号是题注、正文引用是交叉引用，编号连续，没有“错误！未找到引用源”
 - [ ] 表格全是三线表（单实线，没有双线、单元格间距或内置样式），`TABLE_NOT_3LINE` 为 0，宽度不发散也不挤；导航窗格里标题层级完整
