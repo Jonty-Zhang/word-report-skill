@@ -396,7 +396,8 @@ def main():
     expected = ["SMALL_FONT", "FORBIDDEN", "HEDGE", "MARKDOWN", "AI_WORD", "EMPTY_PARAS", "FLAW_SPREAD",
                 "PRONOUN_MIX", "IMG_TOO_WIDE", "IMG_DISTORTED", "IMG_LOW_DPI", "IMG_NO_CAPTION", "EXCLAIM",
                 "TABLE_NOT_3LINE", "TABLE_SPACING", "NO_OUTLINE", "CAPTION_NO_FIELD", "XREF_MANUAL", "XREF_DANGLING",
-                "CITE_MANUAL", "CITE_DANGLING", "BIB_UNCITED", "BIB_NO_FIELD", "BIB_INDENT", "BIB_FORMAT"]
+                "CITE_MANUAL", "CITE_DANGLING", "BIB_UNCITED", "BIB_NO_FIELD", "BIB_INDENT", "BIB_FORMAT",
+                "PAGE_NUMBER"]
     for frag in ("缺文献类型标识", "非网络文献却写了引用日期", "缺 [引用日期]", "全角著录符号", "EINSTEIN"):
         if frag not in out:
             failures.append(f"bad.docx 的 BIB_FORMAT 没查出：{frag}")
