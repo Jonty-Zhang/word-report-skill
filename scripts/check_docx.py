@@ -29,6 +29,7 @@
   EXCLAIM         感叹号过多
   DASH            破折号过多
   PAGE_SETUP      纸张 / 页边距与默认值不符
+  PAGE_NUMBER     没有页码（页眉页脚里没有 PAGE 域）
   TABLE_NOT_3LINE 数据表不是三线表：双线/虚线等非单实线、单元格间距、段落边框、带条件格式边框的表格样式
                   （含文档默认表格样式）、竖线、表身横线、缺顶/底/栏目线、底纹
   TABLE_RULE_WEIGHT 三线的线宽不对（顶底 1.5 磅、栏目线 0.75 磅）
@@ -1093,6 +1094,18 @@ def extra_xml_parts(doc):
     return out
 
 
+def check_page_number(doc, rep):
+    for sec in doc.sections:
+        for part in (sec.footer, sec.header):
+            for it in part._element.iter(qn("w:instrText")):
+                if (it.text or "").strip().upper().startswith("PAGE"):
+                    return
+            for fs in part._element.iter(qn("w:fldSimple")):
+                if (fs.get(qn("w:instr")) or "").strip().upper().startswith("PAGE"):
+                    return
+    rep.error("PAGE_NUMBER", "文档没有页码：应在页脚居中插入页码（PAGE 域）；用 docx_helpers 时 finalize 会自动加")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="检查课程报告 .docx 的字号、图片、语言、版面问题")
     ap.add_argument("docx")
@@ -1119,6 +1132,7 @@ def main(argv=None):
     check_outline(doc, rep)
     check_captions(doc, rep)
     check_citations(doc, rep)
+    check_page_number(doc, rep)
     if not (args.no_layout or args.template):
         check_layout(doc, rep)
 
