@@ -95,6 +95,7 @@ description: Use when writing or formatting a Chinese course deliverable as a Wo
 
 1. **写正文**：先按文体列大纲，再成段写；写完用 `references/wording.md` 的清单自审一遍，再写入文档。
 2. **生成 .docx**：优先 python-docx（本机已装）。`scripts/docx_helpers.py` 里有现成函数：中英文字体、带大纲级别的标题、三线表（自动列宽、二级表头、合计线、表注）、按像素自动算尺寸的插图、题注与交叉引用（`[[fig:key]]` 写法）、文献引用与参考文献表（`[[cite:key]]` + `gbt7714()` 生成 2025 版著录 + `add_references`）、代码块，最后调用 `finalize(doc)`。有模板时复制模板文件再填内容。
+   - `finalize` 会估算分页：图表在页底放不下、要留下大块空白时，略微缩图、把后文挪到图表前，或让短表允许跨页（表头重复）。改动打印在 `[分页]` 行里，也可用 `layout_log()` 取到，交付时告诉用户，并提醒在 Word 里看一眼。
 3. **跑检查**：
    ```bash
    python3 scripts/check_docx.py 输出文件.docx
