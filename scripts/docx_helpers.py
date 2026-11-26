@@ -20,7 +20,7 @@
     h.add_references(doc, [                                                 # 悬挂缩进，按首次引用排序
         ("zhang2020", h.gbt7714("J", ["张三"], "题名", journal="刊名", year=2020, volume=3, issue=2, pages="1-5")),
         ("li2019", h.gbt7714("M", ["李四"], "书名", place="北京", publisher="出版社", year=2019, pages="10-12"))])
-    h.finalize(doc)                          # 回填交叉引用；引用不存在的 key 会报错
+    h.finalize(doc)                          # 回填交叉引用（引用不存在会报错），没有页码时自动加页码
     doc.save("课程名_报告标题_姓名.docx")
 
 所有字号不小于 10 pt；图片宽度默认不超过 15 cm、高度不超过 18 cm，并按 150 dpi 下限压尺寸；
@@ -569,9 +569,25 @@ def add_references(doc, entries, heading: str = "参考文献", page_break: bool
     return order
 
 
-def finalize(doc):
+def has_page_numbers(doc) -> bool:
+    """页眉或页脚里是否已有 PAGE 域。"""
+    for sec in doc.sections:
+        for part in (sec.footer, sec.header):
+            for it in part._element.iter(qn("w:instrText")):
+                if (it.text or "").strip().upper().startswith("PAGE"):
+                    return True
+            for fs in part._element.iter(qn("w:fldSimple")):
+                if (fs.get(qn("w:instr")) or "").strip().upper().startswith("PAGE"):
+                    return True
+    return False
+
+
+def finalize(doc, page_numbers: bool = True):
     """回填所有交叉引用：把先于图表出现的 [[fig:key]] 换成真实书签和编号。
-    引用了不存在的 key 会抛错，避免成品里出现“错误！未找到引用源”。"""
+    引用了不存在的 key 会抛错，避免成品里出现“错误！未找到引用源”。
+    页码：文档还没有页码时，自动在页脚居中加上（五号）。"""
+    if page_numbers and not has_page_numbers(doc):
+        add_page_number_footer(doc)
     missing = []
     for it in doc.element.body.iter(qn("w:instrText")):
         txt = it.text or ""
