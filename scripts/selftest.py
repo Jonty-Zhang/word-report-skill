@@ -374,6 +374,72 @@ def gbt_checks():
     return errs
 
 
+def pagination_checks(work):
+    """图表在页底放不下：插图靠挪正文或缩图消掉大块空白；短表改为允许跨页（报告不加“续表”字样）。"""
+    import pagination
+    errs = []
+    png = os.path.join(work, "blank.png")
+    Image.new("RGB", (1500, 1000), "white").save(png, dpi=(300, 300))
+    line = "单行正文用于调整插图位置。"
+
+    def build(n, kind, follow="text", rows=70):
+        h.reset_counters(by_chapter=False)
+        d = Document()
+        h.setup_document(d)
+        h.add_heading(d, "1 测试", 1)
+        for _ in range(n):
+            h.add_body(d, line)
+        if kind == "fig":
+            h.add_body(d, "见[[fig:a]]。")
+            h.add_figure(d, png, "测试插图", width_cm=14, key="a")
+        else:
+            h.add_body(d, "见[[tab:a]]。")
+            h.add_table(d, [["序号", "x/mm"]] + [[str(i), f"{i}.00"] for i in range(1, rows + 1)],
+                        caption="测试表格", key="a", note="测试表注")
+        if follow == "heading":
+            h.add_heading(d, "2 下一章", 1)
+        for _ in range(6):
+            h.add_body(d, "后文。" + line * 6)
+        h.finalize(d, fix_gaps=False)
+        return d
+
+    def big_gaps(d):
+        lay = pagination._Layout(d)
+        return [e for e in lay.simulate(lay.blocks()) if e[2] > pagination.GAP_RATIO * lay.page_h]
+
+    moved = shrunk = 0
+    for follow in ("text", "heading"):
+        for n in range(4, 44):
+            d = build(n, "fig", follow)
+            before = big_gaps(d)
+            log = pagination.reduce_float_gaps(d)
+            if before and not log:
+                errs.append(f"{follow} n={n}：有大块留白却没有任何处理或说明")
+            if big_gaps(d) and not any("未自动处理" in x for x in log):
+                errs.append(f"{follow} n={n}：留白没消掉，也没记进日志：{log}")
+            if follow == "heading" and any("移到" in x for x in log):
+                errs.append(f"n={n}：后面紧接标题时不应挪正文")
+            moved += any("移到" in x for x in log)
+            shrunk += any("缩小到" in x for x in log)
+    if not moved or not shrunk:
+        errs.append(f"分页用例没有覆盖挪正文（{moved}）和缩图（{shrunk}）两种处理")
+    flowed = 0
+    for n in range(4, 44):
+        d = build(n, "tab", rows=12)
+        log = pagination.reduce_float_gaps(d, split_mode="flow")
+        if big_gaps(d) and not any("未自动处理" in x for x in log):
+            errs.append(f"表格 n={n}：留白没消掉，也没记进日志：{log}")
+        if any(p.text.endswith("（续）") for p in d.paragraphs) or len(d.tables) != 1:
+            errs.append(f"表格 n={n}：报告不应拆表或加“续表”字样")
+        flowed += any("允许跨页" in x for x in log)
+    if not flowed:
+        errs.append("分页用例没有覆盖短表改为允许跨页")
+    out = os.path.join(work, "pagination.docx")
+    d.save(out)
+    Document(out)
+    return ["分页：" + e for e in errs]
+
+
 def main():
     work = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="word-report-selftest-")
     os.makedirs(work, exist_ok=True)
@@ -439,6 +505,7 @@ def main():
 
     failures += gbt_checks()
     failures += table_variant_checks(work)
+    failures += pagination_checks(work)
 
     print("工作目录：", work)
     if failures:
